@@ -121,7 +121,7 @@ The peak indicators update continuously with the input signal and may appear to 
 
 Onkyo HF Player supports UAC1 mode only. This project has been verified with HF Player in UAC1 mode on the Android device listed above.
 
-When not using Onkyo HF Player's proprietary driver and using the Android standard driver (e.g. with Foobar2000), normal operation has been verified in both UAC1 and UAC2 modes on the Sony XQ-ES44. However, after using Onkyo HF Player's proprietary driver, disconnect and reconnect the USB connector once before switching to the Android standard driver so that Android can recognize the device correctly.
+When using the Android standard driver instead of Onkyo HF Player's proprietary driver (e.g. with Foobar2000), operation has been verified in both UAC1 and UAC2 modes on the Sony XQ-ES44, but clicks may occur. After using Onkyo HF Player's proprietary driver, disconnect and reconnect the USB connector once before switching to the Android standard driver so that Android can recognize the device correctly.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
 
@@ -136,7 +136,9 @@ On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16
 - With the test settings `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`, the Windows ring level reached 49.9% after about 3 minutes 40 seconds without observed dropouts. Android Foobar2000 reached 50% after about 2 minutes 27 seconds without observed clicks. Clicks remained with the Music app under the same settings.
 - Turning DSEE Ultimate off in the Music app greatly reduced click frequency, but intermittent clicks and brief muddy-sounding audio remained.
 
-Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Foobar2000 and disabling DSEE Ultimate are possible workarounds. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
+Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
+
+With v2.0 of this project on a Sony XQ-ES44 (Android 16) in UAC1 mode, no clicks were observed using Onkyo HF Player's proprietary driver at 24-bit / 44.1 kHz or 88.2 kHz. In contrast, clicks occurred at 24-bit / 48 kHz with the Android standard driver in the Music app (DSEE Ultimate off) and Foobar2000. The cause remains unknown because the playback formats differed.
 
 ---
 
