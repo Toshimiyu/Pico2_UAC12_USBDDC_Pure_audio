@@ -8,7 +8,6 @@
 #include <string.h>
 #include "transmit_to_dac.h"
 #include "usb_device_control.h"
-#include "usb_device_control.h"
 #include "hardware/dma.h"
 #include "hardware/pwm.h"
 #include "hardware/regs/dma.h"
@@ -39,7 +38,6 @@ typedef enum
 static volatile int dma_ch[DMA_TX_CHAIN_CHANNELS];
 static dma_channel_config c_dma[DMA_TX_CHAIN_CHANNELS];
 static volatile uint8_t dma_ch_state[DMA_TX_CHAIN_CHANNELS];
-static bool dma_ahb_error_seen[DMA_TX_CHAIN_CHANNELS];
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -56,29 +54,6 @@ static void dma_tx_reset(void)
 }
 
 volatile bool enable_output = false;
-
-// Ver1.2 diagnostics -------------------------------------------------------------------------
-DMA_DIAG dma_diag = {.armed = false, .level_min = INT32_MAX, .level_max = 0, .fetch_count = 0, .output_stop_count = 0,
-                     .loop_prev_us = 0, .loop_max_us = 0, .loop_over_count = 0, .tail_block_count = 0};
-
-void dma_diag_reset(void)
-{
-    dma_diag.level_min = INT32_MAX;
-    dma_diag.level_max = 0;
-    dma_diag.loop_max_us = 0;
-    dma_diag.loop_over_count = 0;
-    for (uint8_t i = 0; i < 4; ++i)
-        dma_diag.loop_hist[i] = 0;
-}
-
-void dma_diag_reset_counters(void)
-{
-    dma_diag_reset();
-    dma_diag.fetch_count = 0;
-    dma_diag.output_stop_count = 0;
-    dma_diag.loop_prev_us = 0;
-    dma_diag.tail_block_count = 0;
-}
 
 // Blocks in use are the last dma_tx.using blocks written (oldest first). The oldest one may be partly
 // played already, so this is an upper bound. Read from Core0 without locking: approximate by design.
@@ -104,9 +79,7 @@ void __not_in_flash_func(dma_tx_start)(void);
 static inline uint32_t dma_tx_active_count(void);
 static inline bool dma_tx_any_running(void);
 static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused);
-static bool dma_tail_seen = false; // lone-block episode already counted
 static bool prefill_waiting_for_pio = false;
-static uint32_t output_start_us;
 
 bool calc_pwm_clkdiv_and_wrap_us(float target_period_us, uint16_t *wrap_out, float *clkdiv_out);
 void set_pwm_isr_1(float period_us);
@@ -135,37 +108,8 @@ static inline bool dma_tx_any_running(void)
     return false;
 }
 
-static void __not_in_flash_func(dma_tx_check_ahb_errors)(void)
-{
-    for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-    {
-        const bool error =
-            (dma_hw->ch[dma_ch[i]].ctrl_trig & DMA_CH0_CTRL_TRIG_AHB_ERROR_BITS) != 0u;
-        if (error && !dma_ahb_error_seen[i])
-            usb_audio_log_anomaly(10, (uint8_t)dma_ch[i], "CHANNEL", (uint32_t)dma_ch[i]);
-        dma_ahb_error_seen[i] = error;
-    }
-}
-
-static void __not_in_flash_func(dma_tx_check_pio_stall)(uint32_t now_us)
-{
-    const uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
-    if ((pio->fdebug & stall_mask) == 0u)
-        return;
-
-    pio->fdebug = stall_mask;
-    if (!enable_output || usb_audio_get_state() != USB_AUDIO_STREAMING ||
-        (uint32_t)(now_us - output_start_us) < 10000u)
-        return;
-
-    const uint32_t fifo_level = pio_sm_get_tx_fifo_level(pio, sm);
-    usb_audio_log_anomaly(9, (uint8_t)fifo_level, "TXFIFO", fifo_level);
-}
-
 static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused)
 {
-    dma_tx_check_ahb_errors();
-
     for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
     {
         bool busy = dma_channel_is_busy(dma_ch[i]);
@@ -235,19 +179,9 @@ static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused)
                           (ring_paused || get_size_using(&buffer_audio) == 0);
         if (tail)
         {
-            if (!dma_tail_seen)
-            {
-                dma_tail_seen = true;
-                if (dma_diag.armed)
-                    dma_diag.tail_block_count++;
-            }
 #if DMA_START_TAIL_BLOCK
             start = true;
 #endif
-        }
-        else
-        {
-            dma_tail_seen = false;
         }
 
         if (start)
@@ -255,10 +189,6 @@ static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused)
             dma_channel_start(dma_ch[start_idx]);
             dma_ch_state[start_idx] = DMA_CH_STATE_RUNNING;
         }
-    }
-    else
-    {
-        dma_tail_seen = false;
     }
 }
 
@@ -335,30 +265,6 @@ extern volatile absolute_time_t time_start_output;
 
 void __not_in_flash_func(dma_tx_start)(void)
 {
-    // Loop-interval diagnostics: gap between two calls (this loop also runs the FFT)
-    const uint32_t loop_now_us = time_us_32();
-    static uint32_t anomaly_loop_prev_us;
-    if (usb_audio_get_state() == USB_AUDIO_STREAMING && anomaly_loop_prev_us != 0)
-    {
-        const uint32_t gap_us = loop_now_us - anomaly_loop_prev_us;
-        if (gap_us >= 5000u)
-            usb_audio_log_anomaly(7, (uint8_t)(gap_us / 1000u), "GAP_US", gap_us);
-    }
-    anomaly_loop_prev_us = loop_now_us;
-
-    if (dma_diag.armed && dma_diag.loop_prev_us != 0)
-    {
-        const uint32_t gap_us = loop_now_us - dma_diag.loop_prev_us;
-        if (gap_us > dma_diag.loop_max_us)
-            dma_diag.loop_max_us = gap_us;
-        if (gap_us > LOOP1_WARN_US)
-            dma_diag.loop_over_count++;
-        const uint8_t hist_bin = gap_us < 1000u ? 0u :
-            (gap_us < 2000u ? 1u : (gap_us < 5000u ? 2u : 3u));
-        dma_diag.loop_hist[hist_bin]++;
-    }
-    dma_diag.loop_prev_us = dma_diag.armed ? loop_now_us : 0;
-
     const usb_audio_state_t state = usb_audio_get_state();
     const bool ring_paused = state == USB_AUDIO_BUFFERING || state == USB_AUDIO_UNDERFLOW_FATAL;
     if (ring_paused)
@@ -387,18 +293,12 @@ void __not_in_flash_func(dma_tx_start)(void)
         enable_output = true;
     else if (level == 0 && dma_tx.using == 0)
     {
-        if (enable_output && usb_audio_get_state() == USB_AUDIO_STREAMING)
-        {
-            dma_diag.output_stop_count++;
-            usb_audio_log_anomaly(5, 0, NULL, 0);
-        }
         enable_output = false;
     }
 
 
     if (enable_output && !enable_output_prev)
     {
-        output_start_us = loop_now_us;
         pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
         time_start_output = get_absolute_time();
         pio_sm_set_enabled(pio, sm, false);
@@ -423,7 +323,6 @@ void __not_in_flash_func(dma_tx_start)(void)
         int32_t frames = (int32_t)get_size_using(&buffer_audio) / 2;
         if (frames <= 0)
             break;
-        const int32_t level_before = frames; // Ring level just before this fetch
         if (frames > DMA_MAX_FRAMES)
             frames = DMA_MAX_FRAMES;
 
@@ -431,16 +330,6 @@ void __not_in_flash_func(dma_tx_start)(void)
         uint32_t *tx = dma_tx.data[wp].tx_buf;
         if (ringbuf_read_array_spinlock((int32_t *)tx, (uint32_t)frames * 2u, &buffer_audio) < 0)
             break;
-
-        dma_diag.fetch_count++;
-        if (dma_diag.armed)
-        {
-            const int32_t level_after = (int32_t)get_size_using(&buffer_audio) / 2;
-            if (level_before > dma_diag.level_max)
-                dma_diag.level_max = level_before;
-            if (level_after < dma_diag.level_min)
-                dma_diag.level_min = level_after;
-        }
 
         const uint32_t irq_state = save_and_disable_interrupts();
         dma_tx.data[wp].tx_size = (uint32_t)frames * 2u;
@@ -450,7 +339,6 @@ void __not_in_flash_func(dma_tx_start)(void)
     }
 
     dma_tx_chain_service(false);
-    dma_tx_check_pio_stall(time_us_32());
 }
 
 void dma_stop_and_clear(void)

@@ -70,7 +70,7 @@ extern "C" {
 //------------- CLASS -------------//
 #define CFG_TUD_AUDIO             1
 #define CFG_TUD_HID               0
-#define CFG_TUD_CDC               USB_CDC_ENABLED
+#define CFG_TUD_CDC               0
 #define CFG_TUD_MSC               0
 #define CFG_TUD_MIDI              0
 #define CFG_TUD_VENDOR            0
@@ -104,12 +104,6 @@ extern "C" {
 // Explicit feedback EP. The value is set by usb_device_control.c (tud_audio_fb_set),
 // the built-in FIFO-count method is NOT used.
 #define CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP                1
-
-#define CFG_TUD_CDC_RX_BUFSIZE                          256
-// Buffer diagnostic rows during temporary host-side CDC read stalls.
-#define CFG_TUD_CDC_TX_BUFSIZE                          32768
-#define CFG_TUD_CDC_RX_EPSIZE                           64
-#define CFG_TUD_CDC_TX_EPSIZE                           64
 
 #ifdef __cplusplus
 }

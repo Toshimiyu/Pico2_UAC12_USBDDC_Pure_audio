@@ -19,12 +19,10 @@
 #include "hardware/regs/intctrl.h"
 #include "common.h"
 #include "usb_device_control.h"
-#include "cdc_diagnostics.h"
 #include "transmit_to_dac.h"
 #include "ringbuffer.h"
 #include "display_rta.h"
 #include "spectrum.h"
-#include "debug_gauge.h"
 
 #define IDLE_CLEANUP_TIMEOUT_US (500000u)
 
@@ -52,7 +50,6 @@ static void boot_wait_ms(uint32_t ms)
 	while (!time_reached(end))
 	{
 		usb_audio_task();
-		cdc_diagnostics_task();
 		service_idle_cleanup();
 		display_service();
 		sleep_us(1);
@@ -74,39 +71,11 @@ extern volatile bool enable_output;
 
 static void display_service(void)
 {
-	const display_button_action_t button_action = display_rta_process_buttons();
-	switch (button_action)
-	{
-	case DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_3:
-		debug_gauge_set_reset_countdown(3);
-		break;
-	case DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_2:
-		debug_gauge_set_reset_countdown(2);
-		break;
-	case DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_1:
-		debug_gauge_set_reset_countdown(1);
-		break;
-	case DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_CLEARED:
-		debug_gauge_set_reset_countdown(0);
-		break;
-	case DISPLAY_BUTTON_ACTION_RESET_DIAGNOSTICS:
-		debug_gauge_reset();
-		break;
-	default:
-		break;
-	}
-	const display_page_t requested_page = display_rta_get_page();
-	usb_audio_set_diagnostics_enabled(
-		requested_page == DISPLAY_PAGE_DIAGNOSTICS || cdc_diagnostics_is_connected());
-
+	display_rta_process_buttons();
 	if (display_rta_page_service())
 	{
 		const display_page_t page = display_rta_get_page();
-		if (page == DISPLAY_PAGE_DIAGNOSTICS)
-		{
-			debug_gauge_init();
-		}
-		else if (page == DISPLAY_PAGE_PLAYBACK)
+		if (page == DISPLAY_PAGE_PLAYBACK)
 		{
 			display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
 		}
@@ -122,10 +91,6 @@ static void display_service(void)
 	if (page == DISPLAY_PAGE_PLAYBACK)
 	{
 		display_rta_render_service();
-	}
-	else if (page == DISPLAY_PAGE_DIAGNOSTICS)
-	{
-		debug_gauge_service();
 	}
 }
 
@@ -223,8 +188,6 @@ int main(void)
 	gpio_set_dir(DCDC_MODE_PIN, true);
 	gpio_put(DCDC_MODE_PIN, true);
 
-	cdc_diagnostics_init();
-
 	// Start Core1, which handles I2S output.
 	multicore_launch_core1(core1_main);
 
@@ -257,7 +220,7 @@ int main(void)
 	display_rta_set_boot_stage(5);
 	boot_wait_ms(1000);
 
-	// Show the playback screen after startup; use X/Y to switch to the boot or diagnostics screen.
+	// Show the playback screen after startup.
 	display_rta_set_page(DISPLAY_PAGE_PLAYBACK);
 
 	// watchdog_enable(50, 1);
@@ -268,7 +231,6 @@ int main(void)
 
 		// TinyUSB device task + direct PCM receive-to-I2S ring buffer + feedback/state management
 		usb_audio_task();
-		cdc_diagnostics_task();
 		service_idle_cleanup();
 
 		sleep_us(1);
@@ -301,7 +263,7 @@ int main(void)
 	        inactivity_screen_reset = true;
 	    }
 
-	    // Only the active page is drawn; diagnostics no longer overlays the playback screen.
+	    // Only the active page is drawn.
 	    display_service();
 	}
 }

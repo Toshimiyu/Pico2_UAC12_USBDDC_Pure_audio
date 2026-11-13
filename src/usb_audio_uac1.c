@@ -46,13 +46,11 @@ bool usb_audio_class_get_format(uint8_t alt, usb_audio_format_t *format)
     + TUD_AUDIO10_DESC_STD_AS_ISO_EP_LEN \
     + TUD_AUDIO10_DESC_CS_AS_ISO_EP_LEN \
     + TUD_AUDIO10_DESC_STD_AS_ISO_EP_LEN)
-#define UAC1_CDC_DESC_LEN (USB_CDC_ENABLED ? TUD_CDC_DESC_LEN : 0)
-#define UAC1_CONFIG_INTERFACE_COUNT (USB_CDC_ENABLED ? ITF_NUM_TOTAL : ITF_NUM_CDC)
-#define UAC1_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + UAC1_FUNC_DESC_LEN_NUM + UAC1_CDC_DESC_LEN)
+#define UAC1_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + UAC1_FUNC_DESC_LEN_NUM)
 
 static const uint8_t desc_uac1_configuration[] =
 {
-    TUD_CONFIG_DESCRIPTOR(1, UAC1_CONFIG_INTERFACE_COUNT, 0, UAC1_CONFIG_TOTAL_LEN, 0x00, 100),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_AUDIO_INTERFACES, 0, UAC1_CONFIG_TOTAL_LEN, 0x00, 100),
     8, TUSB_DESC_INTERFACE_ASSOCIATION, ITF_NUM_AUDIO_CONTROL, 2,
         TUSB_CLASS_AUDIO, 0, 0, 0,
     TUD_AUDIO10_DESC_STD_AC(ITF_NUM_AUDIO_CONTROL, 0, 0),
@@ -68,10 +66,6 @@ static const uint8_t desc_uac1_configuration[] =
     TUD_AUDIO10_DESC_STD_AS_INT(ITF_NUM_AUDIO_STREAMING, 0, 0, 0),
     UAC1_AS_FORMAT(UAC1_ALT_16BIT, 2, 16, UAC1_EP_SZ_16BIT),
     UAC1_AS_FORMAT(UAC1_ALT_24BIT, 3, 24, UAC1_EP_SZ_24BIT),
-#if USB_CDC_ENABLED
-    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, USB_CDC_STRING_INDEX, USB_CDC_EP_NOTIF, 8,
-        USB_CDC_EP_OUT, USB_CDC_EP_IN, 64),
-#endif
 };
 
 TU_VERIFY_STATIC(sizeof(desc_uac1_configuration) == UAC1_CONFIG_TOTAL_LEN,
@@ -85,7 +79,7 @@ TU_VERIFY_STATIC(UAC1_EP_SZ_MAX <= 1023, "Full-Speed isochronous packet size lim
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 {
-    usb_audio_record_event('C', index, 0, 0, true, false);
+    (void)index;
     return desc_uac1_configuration;
 }
 
@@ -168,11 +162,8 @@ static bool feature_unit_set_request(tusb_control_request_t const *request, cons
 bool tud_audio_get_req_entity_cb(uint8_t rhport, tusb_control_request_t const *request)
 {
     const uint8_t entity_id = TU_U16_HIGH(request->wIndex);
-    const bool ok = entity_id == UAC1_ENTITY_FEATURE_UNIT
+    return entity_id == UAC1_ENTITY_FEATURE_UNIT
         && feature_unit_get_request(rhport, request);
-    usb_audio_record_event('G', entity_id, TU_U16_HIGH(request->wValue),
-                           request->bRequest, ok, true);
-    return ok;
 }
 
 bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *request,
@@ -180,11 +171,8 @@ bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *r
 {
     (void)rhport;
     const uint8_t entity_id = TU_U16_HIGH(request->wIndex);
-    const bool ok = entity_id == UAC1_ENTITY_FEATURE_UNIT
+    return entity_id == UAC1_ENTITY_FEATURE_UNIT
         && feature_unit_set_request(request, buffer);
-    usb_audio_record_event('S', entity_id, TU_U16_HIGH(request->wValue),
-                           request->bRequest, ok, true);
-    return ok;
 }
 
 static uint32_t decode_sample_rate(const uint8_t buffer[3])
@@ -252,7 +240,6 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *request)
     const uint8_t interface_number = TU_U16_LOW(request->wIndex);
     const uint8_t alt = TU_U16_LOW(request->wValue);
 
-    usb_audio_record_event(alt == 0 ? 'A' : 'I', interface_number, alt, 0, true, false);
     if (interface_number != ITF_NUM_AUDIO_STREAMING)
         return true;
     if (alt == 0)
@@ -283,12 +270,5 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf,
 
 void tud_umount_cb(void)
 {
-    usb_audio_log_anomaly(4, 0xFF, "EVENT_ID", 0xFF);
-    usb_audio_record_event('U', 0, 0, 0, true, false);
     usb_audio_stream_close();
-}
-
-void tud_mount_cb(void)
-{
-    usb_audio_record_event('M', 0, 0, 0, true, false);
 }

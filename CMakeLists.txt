@@ -50,16 +50,7 @@ endif()
 include(pico_sdk_import.cmake)
 # include(example_auto_set_url.cmake)
 
-project(Pico2_UAC12_USBDDC_11FFT_NoOverSampling C CXX ASM)
-
-# USB bring-up mode:
-# 0 = USB off, 1 = TinyUSB enumeration only without CDC,
-# 2 = full audio without CDC, 3 = full audio with CDC.
-set(USB_BRINGUP_LEVEL "2" CACHE STRING "USB startup mode (0, 1, 2, or 3)")
-set_property(CACHE USB_BRINGUP_LEVEL PROPERTY STRINGS 0 1 2 3)
-if(NOT USB_BRINGUP_LEVEL MATCHES "^[0-3]$")
-    message(FATAL_ERROR "USB_BRINGUP_LEVEL must be 0, 1, 2, or 3")
-endif()
+project(Pico2_UAC12_USBDDC_Pure_audio C CXX ASM)
 
 # --- Generate the current build date and time as a string ---
 # Use the YYYY/MM/DD HH:MM format.
@@ -78,10 +69,8 @@ add_subdirectory(src)
 
 # Compile Definitions
 # (PICO_USBDEV_* definitions for pico-extras usb_device / LUFA are no longer needed after migrating to TinyUSB.)
-target_compile_definitions(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
+target_compile_definitions(Pico2_UAC12_USBDDC_Pure_audio PRIVATE
     AUDIO_FREQ_MAX=192000
-
-    USB_BRINGUP_LEVEL=${USB_BRINGUP_LEVEL}
 
     # Core0/Core1 stack 2KB -> 4KB (TFT drawing alone needs ~1.4KB; USB/timer ISRs nest on top of it)
     PICO_STACK_SIZE=0x1000

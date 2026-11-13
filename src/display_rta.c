@@ -8,9 +8,7 @@
 
 #include "display_rta.h"
 #include "common.h"
-#include "usb_audio_config.h"
 #include "transmit_to_dac.h"
-#include "cdc_diagnostics.h"
 #include "ringbuffer.h"
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
@@ -40,7 +38,6 @@
 // Peak bar and RTA layout parameters.
 // ===================================================
 #define PEAK_HOLD_US      300000u
-#define DIAGNOSTICS_RESET_HOLD_US 3000000u
 #define PEAK_FALL_PIXELS_PER_SEC 120u
 #define PEAK_FALL_PIXEL_INTERVAL_US (1000000u / PEAK_FALL_PIXELS_PER_SEC)
 #define RTA_FRAME_INTERVAL_US 33334u
@@ -210,11 +207,6 @@ static uint16_t page_clear_row = 0;
 static bool page_ready = true;
 
 static display_button_t button_x;
-static display_button_t button_y;
-static bool diagnostics_reset_latched = false;
-static bool diagnostics_y_hold_tracking = false;
-static uint32_t diagnostics_y_hold_start_us = 0;
-static uint8_t diagnostics_last_countdown = 0;
 
 // Buffer for the peak dot animation.
 static uint8_t peak_l_dots[SPECTRUM_BAND_COUNT] = {0};
@@ -358,10 +350,6 @@ lcd_write_cmd(0x2C); // Memory Write
 }
 
 static void lcd_fill_color(uint16_t color) {
-#if USB_CDC_ENABLED
-const bool measure_lcd = cdc_diagnostics_is_active();
-const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
-#endif
 lcd_set_window(0, 0, 319, 239);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -370,10 +358,6 @@ for (int i = 0; i < 320 * 240; i++) {
 spi_write_blocking(spi0, data, 2);
 }
 gpio_put(LCD_CS_PIN, 1);
-#if USB_CDC_ENABLED
-if (measure_lcd)
-cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
-#endif
 }
 
 static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
@@ -386,10 +370,6 @@ page_draw_enqueue_fill(x, y, w, h, color);
 return;
 }
 
-#if USB_CDC_ENABLED
-const bool measure_lcd = cdc_diagnostics_is_active();
-const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
-#endif
 lcd_set_window(x, y, x + w - 1, y + h - 1);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -408,10 +388,6 @@ spi_write_blocking(spi0, lcd_fill_chunk, chunk);
 remaining -= chunk;
 }
 gpio_put(LCD_CS_PIN, 1);
-#if USB_CDC_ENABLED
-if (measure_lcd)
-cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
-#endif
 }
 
 static void lcd_draw_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
@@ -447,10 +423,6 @@ page_draw_ops[page_draw_count++] = (page_draw_op_t){
 return;
 }
 
-#if USB_CDC_ENABLED
-const bool measure_lcd = cdc_diagnostics_is_active();
-const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
-#endif
 lcd_set_window(x, y, x + width - 1, y + height - 1);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -473,10 +445,6 @@ buf[buf_idx++] = low;
 
 spi_write_blocking(spi0, buf, buf_idx);
 gpio_put(LCD_CS_PIN, 1);
-#if USB_CDC_ENABLED
-if (measure_lcd)
-cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
-#endif
 }
 
 static void lcd_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg,
@@ -892,16 +860,10 @@ for (uint pin = 6; pin <= 8; ++pin) {
 gpio_init(DISPLAY_BUTTON_X_PIN);
 gpio_set_dir(DISPLAY_BUTTON_X_PIN, GPIO_IN);
 gpio_pull_up(DISPLAY_BUTTON_X_PIN);
-gpio_init(DISPLAY_BUTTON_Y_PIN);
-gpio_set_dir(DISPLAY_BUTTON_Y_PIN, GPIO_IN);
-gpio_pull_up(DISPLAY_BUTTON_Y_PIN);
 const uint32_t buttons_initialized_us = time_us_32();
 button_x.raw_high = gpio_get(DISPLAY_BUTTON_X_PIN);
 button_x.stable_high = button_x.raw_high;
 button_x.raw_changed_us = buttons_initialized_us;
-button_y.raw_high = gpio_get(DISPLAY_BUTTON_Y_PIN);
-button_y.stable_high = button_y.raw_high;
-button_y.raw_changed_us = buttons_initialized_us;
 
 lcd_write_cmd(0x01); // SWRESET
 sleep_ms(150);
@@ -1008,7 +970,7 @@ display_page_t display_rta_get_page(void)
 
 void display_rta_set_page(display_page_t page)
 {
-    if (page > DISPLAY_PAGE_DIAGNOSTICS || page == current_page)
+    if (page > DISPLAY_PAGE_PLAYBACK || page == current_page)
     {
         return;
     }
@@ -1048,20 +1010,12 @@ bool display_rta_page_service(void)
             }
 
             memset(lcd_fill_chunk, 0, sizeof(lcd_fill_chunk));
-#if USB_CDC_ENABLED
-            const bool measure_lcd = cdc_diagnostics_is_active();
-            const uint32_t lcd_start_us = measure_lcd ? time_us_32() : 0u;
-#endif
             lcd_set_window(0, page_clear_row, 319, page_clear_row);
             gpio_put(LCD_DC_PIN, 1);
             gpio_put(LCD_CS_PIN, 0);
             spi_write_blocking(spi0, lcd_fill_chunk, sizeof(lcd_fill_chunk));
             spi_write_blocking(spi0, lcd_fill_chunk, 128);
             gpio_put(LCD_CS_PIN, 1);
-#if USB_CDC_ENABLED
-            if (measure_lcd)
-            cdc_diagnostics_record_lcd_time(time_us_32() - lcd_start_us);
-#endif
             page_clear_row++;
             if (page_clear_row < 240)
             {
@@ -1082,9 +1036,6 @@ bool display_rta_page_service(void)
             page_draw_begin_capture();
             draw_playback_screen();
             page_draw_end_capture();
-            break;
-        case DISPLAY_PAGE_DIAGNOSTICS:
-            page_ready = true;
             break;
         }
         return true;
@@ -1123,80 +1074,15 @@ bool display_rta_page_ready(void)
     return page_ready;
 }
 
-display_button_action_t display_rta_process_buttons(void)
+void display_rta_process_buttons(void)
 {
     const uint32_t now = time_us_32();
     const bool x_pressed = display_button_pressed(&button_x, DISPLAY_BUTTON_X_PIN, now);
-    display_button_pressed(&button_y, DISPLAY_BUTTON_Y_PIN, now);
-    const bool y_raw_down = !button_y.raw_high;
-
-    if (current_page == DISPLAY_PAGE_DIAGNOSTICS)
-    {
-        if (y_raw_down)
-        {
-            if (!diagnostics_y_hold_tracking)
-            {
-                diagnostics_y_hold_tracking = true;
-                diagnostics_y_hold_start_us = button_y.raw_changed_us;
-            }
-
-            const uint32_t hold_us = (uint32_t)(now - diagnostics_y_hold_start_us);
-            if (hold_us >= DIAGNOSTICS_RESET_HOLD_US && !diagnostics_reset_latched)
-            {
-                diagnostics_reset_latched = true;
-                diagnostics_last_countdown = 0;
-                return DISPLAY_BUTTON_ACTION_RESET_DIAGNOSTICS;
-            }
-
-            if (!diagnostics_reset_latched)
-            {
-                const uint8_t seconds_remaining =
-                    3u - (uint8_t)(hold_us / 1000000u);
-                if (seconds_remaining != diagnostics_last_countdown)
-                {
-                    diagnostics_last_countdown = seconds_remaining;
-                    switch (seconds_remaining)
-                    {
-                    case 3:
-                        return DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_3;
-                    case 2:
-                        return DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_2;
-                    case 1:
-                        return DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_1;
-                    default:
-                        break;
-                    }
-                }
-            }
-
-            return DISPLAY_BUTTON_ACTION_NONE;
-        }
-
-        const bool countdown_was_active = diagnostics_y_hold_tracking;
-        diagnostics_y_hold_tracking = false;
-        diagnostics_reset_latched = false;
-        diagnostics_last_countdown = 0;
-        if (countdown_was_active)
-            return DISPLAY_BUTTON_ACTION_RESET_COUNTDOWN_CLEARED;
-
-        if (x_pressed)
-        {
-            display_rta_set_page((display_page_t)((current_page + 1) % 3));
-            return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
-        }
-        return DISPLAY_BUTTON_ACTION_NONE;
-    }
-
-    diagnostics_y_hold_tracking = false;
-    diagnostics_reset_latched = false;
-    diagnostics_last_countdown = 0;
-
     if (!x_pressed)
-        return DISPLAY_BUTTON_ACTION_NONE;
+        return;
 
-    const display_page_t next_page = (display_page_t)((current_page + 1) % 3);
+    const display_page_t next_page = (display_page_t)((current_page + 1) % 2);
     display_rta_set_page(next_page);
-    return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
 }
 
 bool display_rta_process_fft_left(void) {
@@ -1346,16 +1232,4 @@ update_vertical_bar(rx, cur_r_bands[band], &prev_r_bands[band],
 }
 if (++render_step >= (2 * SPECTRUM_BAND_COUNT) + 2)
 render_pending = false;
-}
-
-uint32_t display_rta_buffer_bytes(void)
-{
-return (uint32_t)(
-    sizeof(cur_l_bands) + sizeof(cur_r_bands) + sizeof(spectrum_l) +
-    sizeof(input_l_bands) + sizeof(input_r_bands) + sizeof(prev_l_bands) +
-    sizeof(prev_r_bands) + sizeof(bar_last_update_us) + sizeof(peak_l_dots) +
-    sizeof(peak_r_dots) + sizeof(peak_l_hold_until) + sizeof(peak_r_hold_until) +
-    sizeof(peak_l_next_fall) + sizeof(peak_r_next_fall) + sizeof(last_l_peak_y) +
-    sizeof(last_r_peak_y) + sizeof(format_render_text) + sizeof(lcd_fill_chunk) +
-    sizeof(page_draw_ops));
 }

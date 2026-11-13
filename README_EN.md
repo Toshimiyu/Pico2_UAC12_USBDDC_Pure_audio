@@ -2,6 +2,8 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
+**Current version: v2.0**
+
 ## Description
 
 This project is a major update of `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling` for the RP2350 (Raspberry Pi Pico 2).
@@ -13,9 +15,6 @@ The USB audio subsystem has been redesigned around TinyUSB, allowing USB Audio C
 - UAC1 / UAC2 selectable build configuration
 - TinyUSB-based USB audio layer
 - Common Audio State / RingBuffer / Feedback architecture
-- Improved diagnostic screen with buffer monitoring
-- USB event logging (up to 64 events)
-- USB CDC diagnostic CSV logging alongside UAC1/UAC2
 - Enhanced stream restart and sample-rate switching handling
 - Removal of unused GPIO debug functions
 - High-power clock mode fixed operation
@@ -27,11 +26,9 @@ Audio processing remains:
 - No FIR Filtering
 - No Sample Rate Conversion
 
-Before USB audio data is written to the ring buffer, its PCM sample width (16/24/32-bit) and stereo frame boundaries are checked. If an invalid format or boundary is detected, the TinyUSB OUT FIFO is cleared to resynchronize and the event is recorded in diagnostic counters and, when enabled, the CDC log. The existing state machine continues to operate; in the internal `UNDERFLOW_FATAL` state (shown as `UDF!` in the Diagnostics screen's STATE display), it waits for valid data to accumulate and resumes through the normal rebuffering sequence.
+Before USB audio data is written to the ring buffer, its PCM sample width (16/24/32-bit) and stereo frame boundaries are checked. If an invalid format or boundary is detected, the TinyUSB OUT FIFO is cleared to resynchronize. The playback state machine waits for valid data and resumes through the normal rebuffering sequence.
 
-The firmware also measures abrupt changes between adjacent input PCM samples and records threshold crossings as `PCM_CLICK_CANDIDATE`. This diagnostic does not change the audio data or playback gain. Normal high-frequency signals may also be reported, so a candidate does not confirm an audible click.
-
-Display features such as the 11-band FFT analyzer, real-time level meters, and buffer water-level monitor have been retained and improved.
+Display features such as the 11-band FFT analyzer and real-time level meters have been retained and improved.
 
 **Build Verified**
 
@@ -49,7 +46,6 @@ This project was developed with the following goals:
 - Avoid oversampling, FIR filtering, and sample-rate conversion in the signal path
 - Improve maintainability by separating USB Audio Class specific code
 - Share a common audio engine across UAC1 and UAC2
-- Provide real-time diagnostics for troubleshooting
 
 Software oversampling and FIR filtering were removed because the PCM5100A already implements internal oversampling and digital filtering.
 
@@ -60,6 +56,12 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 ---
 
 ## Change History
+
+### V2.0
+
+- Updated the firmware version to v2.0
+- Removed the diagnostic screen, GPIO debug functions, and USB CDC diagnostic logging, keeping the features needed for USB audio playback
+- Retained the shared UAC1/UAC2 audio core and playback display
 
 ### V1.9
 
@@ -160,7 +162,6 @@ Major changes from `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling`:
 - Selectable USB Audio Class 1.0 / 2.0
 - Asynchronous feedback control using an Async Feedback Endpoint
 - Starts I²S playback and PI feedback control after a sample-rate-dependent prefill of approximately 6 ms
-- Real-time buffer water-level monitor
 - 11-band FFT display with A-weighting
 - No oversampling (NOS)
 - No FIR filtering
@@ -277,7 +278,7 @@ Compared with Ver7 (development designation):
 
 With YouTube playing on Windows 11 26H2 and Google Chrome 156.0.8078.80 (official 64-bit build), the supported output formats were selected and checked on both UAC1 and UAC2 firmware builds. The checked combinations were 16/24-bit at 44.1/48/88.2/96kHz in UAC1, and 16/24/32-bit at those rates in UAC2. Checks covered both stable and unsettled buffer-water-level conditions and lasted approximately 30 seconds; exact per-check durations were not recorded.
 
-Note: During these checks, O (ring-buffer overflow discards), F (USB receive FIFO resynchronization discards), and U (playback output stops) all remained at zero. These counters describe how the device handled received data and do not detect losses on the host or USB bus. This is an observation on the stated setup, not a guarantee for other environments or playback conditions.
+Note: These are observations on the stated setup, not guarantees for other environments or playback conditions.
 
 ---
 
@@ -297,264 +298,21 @@ Note: During these checks, O (ring-buffer overflow discards), F (USB receive FIF
 
 ![Playback Screen](images/system_photo_02.png)
 
-#### Diagnostic Screen
-
-![Diagnostic Screen](images/system_photo_03.png)
-
 Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ---
 
 ## Display Specification (Pico Display Pack 2.0)
 
-At startup, the boot screen is displayed. After initialization completes, the playback screen is shown.
-
-The X button on Pico Display Pack 2.0 cycles through the following screens in one direction:
-
-- Boot Screen
-- Playback Screen
-- Diagnostic Screen
-
-- X : Next screen (Boot → Playback → Diagnostics → Boot)
-
-On the diagnostic screen:
-
-- A : Scroll older USB log entries
-- B : Scroll newer USB log entries
-- A+B : Toggle between USB events and recent audio-state history
-- Hold Y for 3 seconds : Reset diagnostic counters and the USB event log (a countdown is shown while holding)
-
-USB event logging starts at boot, and the latest 64 events remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics screen is active or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
-
-#### USB CDC Diagnostic Log
-
-The diagnostic virtual COM port is controlled by the CMake option `USB_BRINGUP_LEVEL`. Level `3` enables the CDC class, interface, endpoints, and diagnostic log output; levels `0`, `1`, and `2` disable CDC, so no virtual COM port is enumerated and no CDC communication occurs. Open the device's virtual COM port on the PC to receive CSV logs with elapsed milliseconds since CDC connection. Metadata records the firmware version, prefill threshold, UAC mode, and a `#MEM` row with the `.data`-to-`.bss` static RAM span, ring allocation size, mutable FFT static data size, and LCD work-buffer size. `FFT_STATIC_BYTES` and `LCD_BUFFER_BYTES` are included in `SRAM_DATA_BSS_BYTES`, not additional amounts; LCD work buffers exclude flash-resident fonts. The ring is heap-allocated and reported separately. Free heap and stack usage are not measured.
-
-A normal row is emitted every 100 ms with columns `MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`. `USB_MODE` is `UAC1` or `UAC2` according to the build configuration. `HOST_RATE` is estimated from received frames over a 250 ms window. `HF_DIFF_NOW` is the signed `HOST_RATE - FEEDBACK_RATE` when both rates are valid; it is blank if either rate is zero (not yet measured or unavailable). `MAX_HF_DIFF_SESSION` is the maximum absolute difference during the CDC session; `MAX_HF_DIFF_STREAM` is the maximum during the current STREAMING period. The latter excludes estimation windows overlapping the first second of STREAMING and remains zero until a valid measurement is available. `RING_MIN`/`RING_MAX` are the minimum/maximum ring levels observed during each log interval; `RING_AVG` is the mean of samples taken at approximately 1 ms intervals. State transitions use `STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE` rows; anomalies use `ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`, including state, sample rate, ring fill, and frames in the DMA pool. Transition events are recorded on Core0 when the state changes, giving finer timing than periodic samples. The device does not generate calendar time; add it in the PC measurement software if needed. Periodic diagnostic statistics are collected even when the Diagnostics screen is not open while CDC is connected.
-
-Despite their names, `USBBUF_CAPACITY` and `USBBUF_FREE_*` describe audio ring capacity and free space, not the TinyUSB receive FIFO.
-
-The 32 KiB CDC transmit FIFO retains logs during temporary PC read stalls. If the FIFO runs out of space during a longer stall, periodic rows are dropped and reported as `LOG_ROWS_DROPPED` when transmission resumes. Ring, LCD, and FFT statistics in the next periodic row accumulate since the last successfully queued periodic row. Unsent FIFO data is discarded when CDC disconnects. This FIFO uses RAM only in CDC-enabled builds and is separate from the audio buffer.
-
-USB startup levels are `0` (USB off), `1` (TinyUSB initialization only, no CDC), `2` (full operation, no CDC), and `3` (full operation with CDC diagnostic logging). The default is `2`. Specify `-DUSB_BRINGUP_LEVEL=3` only when diagnostic logging is needed. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` or clear the cache before reconfiguring.
-
-Normal playback starts or resumes after approximately 6 ms of audio has accumulated in the ring at the current sample rate. While buffering, no new ring data is moved into DMA, but already queued DMA data is drained. The CSV metadata reports this time as `PREFILL_MS`. The existing CMake option `USB_AUDIO_PREFILL_FRAMES` (reported as `PREFILL_FRAMES`) is the legacy start threshold for draining queued data in non-buffering states, not the normal playback prefill amount.
-
-Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` USB receive FIFO resynchronization, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
+The boot screen appears at startup, then changes to the playback screen after initialization. The X button switches between the boot and playback screens. There is no diagnostics screen or diagnostic USB CDC interface.
 
 ### Playback Screen
 
-The playback screen displays the following real-time information.
-
-#### L/R Level Meter
-
-Displays stereo audio levels in real time.
-
-#### Independent L/R 11-Band FFT Display
-
-Displays left and right channel frequency spectra independently with A-weighting applied.
-FFT bars are updated one channel at a time, left channel first, followed by the right channel.
-
-#### Audio Information
-
-Displays current:
-
-- Bit Depth
-- Sample Rate (Fs)
-
-#### Display Notes
-
-Note: The peak indicator of the L/R level meter updates continuously according to input signal level and may appear to flicker. This is normal behavior.
-
-If the FFT bars and peak meters do not move while music is playing, first check the volume setting on the host device, such as a smartphone or PC. The meter display follows the software gain, so an extremely low host volume or mute may result in no visible activity on the screen.
-
----
-
-### Diagnostic Screen
-
-Press the X button on the playback screen to switch to the diagnostic screen.
-
-The X button cycles through Boot → Playback → Diagnostics → Boot. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
-
-#### Audio Status Information
-
-The upper section displays current USB audio and buffer status.
-
-##### STATE
-
-| State | Description |
-|---------|---------|
-| IDLE | Stopped |
-| BUFF | Buffering |
-| STRM | Streaming |
-| SWCH | Sample-Rate Switching |
-| OVF! | Buffer Overflow |
-| UDF! | Buffer Underflow |
-
-##### HOST / FB
-
-- HOST: Host-requested sample rate
-- FB: Feedback frequency reported to host
-
-##### Bit Depth / Sample Rate
-
-Displayed in the format:
-
-```text
-24bit 96.0kHz
-```
-
-##### RING / LEVEL
-
-Displays:
-
-- Current ring-buffer fill level
-- Percentage of total capacity
-
-The white marker indicates the target buffer level.
-
-The buffer level does not converge to a perfectly fixed value.
-
-The PI controller continuously adjusts USB Feedback to compensate for small fluctuations in the host-side transmission rate caused by Windows, media players, USB scheduling, and other factors.
-
-As a result, the buffer level normally exhibits small movements around the target level rather than remaining perfectly stationary.
-
-##### MIN / MAX
-
-Minimum and maximum buffer levels recorded during playback.
-
-Unit:
-
-```text
-Sample Frames
-```
-
----
-
-### Diagnostic Counters
-
-The right side of the diagnostic screen displays processing statistics.
-
-| Counter | Description |
-|---------|---------|
-| O | Frames discarded due to ring-buffer overflow |
-| F | Frames discarded during USB receive FIFO resynchronization |
-| S | Frames discarded during sample-rate switching |
-| C | Frames cleared during restart or stop processing |
-| U | Output stoppage count detected during playback |
-| a | Maximum Core0 processing interval (µs) |
-| b | Maximum Core1 processing interval (µs) |
-| T | DMA tail-block output count |
-
-O/F/S/C/U are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected only while the Diagnostics screen is active.
-
-For stable operation:
-
-```text
-O = 0
-F = 0
-U = 0
-```
-
-is generally expected.
-
----
-
-### USB Event Log
-
-The bottom area displays USB communication events.
-
-Features:
-
-- 3 columns × 8 rows
-- Up to 64 events stored
-- Newest event at upper-left
-- Oldest event at lower-right
-
-Navigation:
-
-- A button → Older events
-- B button → Newer events
-
-Displayed timestamps indicate seconds after boot.
-
-The USB log is event-driven, not periodic. Holding Y for 3 seconds clears the diagnostic values and event log; subsequent events are recorded normally.
-
-#### Event Symbols
-
-| Symbol | Meaning |
-|---------|---------|
-| M | USB Mount |
-| A | Host request for Audio Streaming Interface Alt=0 |
-| I | Host request for Audio Streaming Interface Alt>0 |
-| O | `usb_audio_stream_open()` |
-| C | `usb_audio_stream_close()` (also used for configuration descriptor requests) |
-| R | `usb_audio_apply_sample_rate()` |
-| W | Sample-rate switch begin / processing in `service_switch()` |
-| K | `service_switch()` completed |
-| G | USB Control Request Get |
-| S | USB Control Request Set / audio state transition |
-| U | USB Disconnect |
-| D | Device descriptor request / buffer drain complete |
-
-Some event symbols are reused for different purposes. In particular, use the following hexadecimal fields and surrounding event sequence to distinguish `C`, `S`, and `D` events. During an alternate-setting change, `A → C → I → O` represents the normal sequence of an Alt=0 request, stream close, Alt>0 request, and stream open; it does not indicate an error.
-
-Result suffix:
-
-Success
-
-```text
-+
-```
-
-Failure
-
-```text
--
-```
-
----
-
-### Information to Capture When Playback Stops
-
-If playback stops or audio dropouts occur, capture the diagnostic screen immediately if possible.
-
-The USB event log stores up to the most recent 64 events.
-
-Please record:
-
-- STATE
-- HOST
-- FB
-- RING / LEVEL
-- MIN / MAX
-- O/F/S/C/U counters
-- a/b/T counters
-- Entire USB event log
-- Current sample rate
-- Current bit depth
-- PC operating system
-- Playback software
-- Timestamp of occurrence
-- Actions immediately before failure
-- Whether playback resumed automatically
-- Whether USB reconnection was required
-
-These records help correlate:
-
-- USB communication status
-- Buffer behavior
-- Audio output activity
-
-and assist troubleshooting.
-
-The recorded information may also be used when consulting AI services regarding fault analysis.
-
-Note: Do not share personal information such as serial numbers.
-
-Diagnostic information is not overlaid on the playback screen.
-
----
+- L/R level meters display the left and right audio levels.
+- An independent 11-band FFT is displayed for each channel.
+- The current bit depth and sample rate are shown.
+
+The peak indicators update continuously with the input signal and may appear to flicker; this is normal. If the FFT bars and meters do not move, check the host volume and mute settings.
 
 ## Supported Operating Systems
 
@@ -577,7 +335,6 @@ On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16
 - No clicks were observed while playing a silent WAV on Android. The USB format during silent playback was not confirmed.
 - With the test settings `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`, the Windows ring level reached 49.9% after about 3 minutes 40 seconds without observed dropouts. Android Foobar2000 reached 50% after about 2 minutes 27 seconds without observed clicks. Clicks remained with the Music app under the same settings.
 - Turning DSEE Ultimate off in the Music app greatly reduced click frequency, but intermittent clicks and brief muddy-sounding audio remained.
-- The diagnostic screen showed O/F/S/C/U at zero and no anomaly events. This does not rule out every kind of audio problem.
 
 Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Foobar2000 and disabling DSEE Ultimate are possible workarounds. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
 
@@ -624,46 +381,6 @@ cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
 
 cmake --build build
 ```
-
-#### UAC2 Build with Diagnostic Logging
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=3
-
-cmake --build build
-```
-
-To build in diagnostic logging mode, add `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is normal operation (level 2), with the virtual COM port and diagnostic log output disabled.
-
-After changing the setting, re-run CMake configuration and rebuild the project.
-
-When using VS Code CMake Tools, change the CMake cache value:
-
-```text
-USB_AUDIO_CLASS_VERSION
-```
-
-to either:
-
-```text
-1
-```
-
-or
-
-```text
-2
-```
-
-and then reconfigure the project.
-
-If the cache value is not changed, the previous configuration remains active.
-
-To build in diagnostic logging mode, specify `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is level `2`, with the virtual COM port and diagnostic log output disabled. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` when reconfiguring. Rebuild after changing the setting.
-
----
 
 ### Building from Windows PowerShell
 
@@ -737,13 +454,13 @@ Successful builds generate the following UF2 files:
 #### UAC1
 
 ```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
+build/src/Pico2_UAC12_USBDDC_Pure_audio_UAC1.uf2
 ```
 
 #### UAC2
 
 ```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
+build/src/Pico2_UAC12_USBDDC_Pure_audio_UAC2.uf2
 ```
 
 To program the device:
@@ -870,7 +587,7 @@ If dropouts occur:
 
 ---
 
-## FFT Spectrum Display & Buffer Monitor
+## FFT Spectrum Display
 
 ### Real-Time 11-Band FFT Spectrum Analyzer
 
@@ -999,16 +716,6 @@ Observed values during operation:
 | Button | GPIO | Usage |
 |----------|------|------|
 | X | GP14 | Next Screen |
-| Y | GP15 | Hold for 3 seconds on the diagnostic screen to reset diagnostics |
-
-Internal pull-up enabled.
-
-### Diagnostic Log Buttons
-
-| Button | GPIO | Usage |
-|----------|------|------|
-| A | GP12 | Older Log Entries |
-| B | GP13 | Newer Log Entries |
 
 Internal pull-up enabled.
 

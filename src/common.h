@@ -22,9 +22,6 @@
 #define TEST_PIN1 (1)
 #define TEST_PIN2 (2)
 
-// Enable CDC diagnostics only in the build mode that exposes the virtual COM port.
-#define COM_PORT_OUTPUT_ENABLE USB_CDC_ENABLED
-
 // String Desc.
 #define MFG_NAME ("Toshimiyu")
 #define DEVICE_NAME ("Pico2 UAC12 USB DDC")
@@ -49,7 +46,7 @@
 #define EXT_POWER_ENABLE_PIN (3)
 #define BOOT_WAIT_TIME_US (50000)
 
-// Pico Display Pack 2.0 wiring shared by the playback and diagnostics screens.
+// Pico Display Pack 2.0 wiring shared by the boot and playback screens.
 #ifndef LCD_SCK_PIN
 #define LCD_SCK_PIN (18)
 #endif
@@ -65,17 +62,8 @@
 #ifndef LCD_BL_PIN
 #define LCD_BL_PIN (20)
 #endif
-#ifndef DISPLAY_BUTTON_A_PIN
-#define DISPLAY_BUTTON_A_PIN (12)
-#endif
-#ifndef DISPLAY_BUTTON_B_PIN
-#define DISPLAY_BUTTON_B_PIN (13)
-#endif
 #ifndef DISPLAY_BUTTON_X_PIN
 #define DISPLAY_BUTTON_X_PIN (14)
-#endif
-#ifndef DISPLAY_BUTTON_Y_PIN
-#define DISPLAY_BUTTON_Y_PIN (15)
 #endif
 #define DISPLAY_BUTTON_DEBOUNCE_US (30000u)
 
@@ -125,14 +113,10 @@
 // DMA transfer buffer size (at least 3 is needed).
 #define DEPTH_DMA_TX_BUFFER (4)
 
-// Ver1.2: start the DMA with a single queued block when nothing else is coming (Ring empty).
+// Start the DMA with a single queued block when nothing else is coming (Ring empty).
 // Before, output only started with >= 2 armed blocks, so the lone last block of a stream (or of a drain)
-// was never played. 0 = old behaviour (dma_diag.tail_block_count still counts the situation).
+// was never played.
 #define DMA_START_TAIL_BLOCK (1)
-
-// Diagnostics: a main-loop pass longer than this counts as 'over' (loop0/loop1_over_count) [us]
-#define LOOP0_WARN_US (1000)
-#define LOOP1_WARN_US (1000)
 
 // Feedback target level (50%) threshold. LCD drawing is allowed only at or above this level.
 #define SIZE_BUFFER_FB_THRESHOLD (SIZE_AUDIO_RING_FRAMES / 2)

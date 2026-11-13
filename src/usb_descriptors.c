@@ -10,7 +10,6 @@
 #include "pico/unique_id.h"
 #include "usb_audio_config.h"
 #include "usb_descriptors.h"
-#include "usb_device_control.h"
 #include "common_types.h"
 #include "common.h" // MFG_NAME
 
@@ -43,7 +42,6 @@ static tusb_desc_device_t const desc_device =
 
 // Invoked when received GET DEVICE DESCRIPTOR
 uint8_t const * tud_descriptor_device_cb(void) {
-  usb_audio_record_event('D', 0, 0, 0, true, false);
   return (uint8_t const *) &desc_device;
 }
 
@@ -56,7 +54,6 @@ enum {
   STRID_PRODUCT,
   STRID_SERIAL,
   STRID_AUDIO_INTERFACE,
-  STRID_CDC_INTERFACE = USB_CDC_STRING_INDEX,
 };
 
 static char const *string_desc_arr[] =
@@ -66,9 +63,6 @@ static char const *string_desc_arr[] =
   USB_AUDIO_PRODUCT_NAME,         // 2: Product
   NULL,                           // 3: Serial = RP2350 unique board ID
   USB_AUDIO_PRODUCT_NAME,         // 4: Audio Interface
-#if USB_CDC_ENABLED
-  "Diagnostic CDC",               // 5: CDC Interface
-#endif
 };
 
 static uint16_t _desc_str[32 + 1];
@@ -76,7 +70,6 @@ static uint16_t _desc_str[32 + 1];
 // Invoked when received GET STRING DESCRIPTOR request
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
   (void) langid;
-  usb_audio_record_event('T', index, 0, 0, true, false);
   size_t chr_count;
 
   switch ( index ) {
