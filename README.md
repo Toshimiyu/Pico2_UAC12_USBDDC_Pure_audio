@@ -1,0 +1,537 @@
+# Pico2_UAC12_USBDDC_Pure_audio（TinyUSB UAC1/UAC2 切替対応）
+
+[English](README_EN.md) | [日本語](README.md)
+
+**現行バージョン: v2.0**
+
+## 概要
+
+本プロジェクトは、従来の `Pico2_UAC12_USBDDC` から診断機能、CDCログ機能を削除した、RP2350（Raspberry Pi Pico 2）用のUSB-DDCファームウェアです。
+
+TinyUSBをベースにUSBオーディオ機能を再構成し、ビルド時にUSB Audio Class 1.0（UAC1）と2.0（UAC2）を選択できます。USBクラス層を分離しながら、共通のオーディオ処理コアを使用します。
+
+### 主な変更点
+
+- UAC1 / UAC2をビルド時に選択可能
+- TinyUSBベースのUSBオーディオ層
+- Audio State、Ring Buffer、Feedback制御の共通化
+- ストリーム再開およびサンプルレート切替処理の改善
+- 未使用のGPIOデバッグ機能を削除
+- 高クロック動作を修正
+- UAC1 / UAC2で共通のオーディオ処理コアを使用
+
+オーディオ処理では、引き続き以下を行いません。
+
+- オーバーサンプリング（NOS）
+- FIRフィルター処理
+- サンプルレート変換
+
+USB受信データはリングバッファーへ格納する前に、PCMサンプル幅（16/24/32-bit）とステレオフレーム境界を検証します。不正な形式や境界を検出した場合はTinyUSBのOUT FIFOを破棄して再同期します。再生状態機械は有効データが蓄積されるまで待ち、通常の再バッファリング経路で復帰します。
+
+11バンドFFTアナライザーとリアルタイムレベルメーターの表示機能を維持・改善しています。
+
+**ビルド確認済み環境**
+
+- Raspberry Pi Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+
+## 設計目標
+
+- オーディオ信号経路を簡素化する
+- 不要なソフトウェアDSP処理をなくす
+- オーバーサンプリング、FIRフィルター、サンプルレート変換を行わない信号経路にする
+- USB Audio Classごとのコードを分離し、保守性を高める
+- UAC1 / UAC2で共通のオーディオエンジンを使う
+
+PCM5100Aは内部でオーバーサンプリングとデジタルフィルター処理を行うため、本ファームウェアではソフトウェアのオーバーサンプリングとFIRフィルターを使用しません。
+
+オーバーサンプリング、FIRフィルター、サンプルレート変換は行いませんが、出力には固定ゲイン比0.80を適用し、さらにUAC1/UAC2の音量設定（0～-64dB）およびミュートをソフトウェアで反映するため、PCMサンプルの値は変化します。
+
+USBミュート／解除は入力PCMに約5msのリニアなゲインランプを適用します。音量変更は従来どおり即時反映します。リングやDMAに既に格納された音声は変更しないため、実際の出力への反映はバッファー分遅れます。入力異常やアンダーフロー時の自動ミュート／フェードは行いません。
+
+## 変更履歴
+
+### V2.0
+
+- ファームウェアバージョンをv2.0に更新
+- 診断画面、GPIOデバッグ機能、USB CDC診断ログを削除し、USBオーディオ再生に必要な機能へ整理
+- UAC1 / UAC2で共通のオーディオ処理と再生画面を維持
+
+## 特長
+
+- USB Audio Class 1.0 / 2.0 切替対応
+- Async Feedback Endpointによる非同期フィードバック制御
+- サンプルレートに応じた約6msのプリフィル後にI²S再生とPIフィードバック制御を開始
+- A特性補正付き11バンドFFT表示
+- オーバーサンプリングなし（NOS）
+- FIRフィルターなし
+- オーバーサンプリング、FIRフィルター、サンプルレート変換を行わないI²S出力
+- DMA + PIOによる低遅延I²S転送
+- RP2350デュアルコア対応
+- PICO_AUDIO_PACK対応
+- Pico Display Pack 2.0対応
+
+## ハードウェア写真
+
+### システム全体
+
+> **組み立て時の重要注意（向き・配置）**
+>
+> Treedixドーターボードに各モジュールを取り付ける際は、接続の向きと、DACボード（Pico Audio Pack）およびPico Display Pack 2.0の並び順を必ず下のシステム全体写真で確認してください。向きや並び順を逆にすると、オーディオジャックなどの部品が物理的に干渉し、正しく取り付けられない場合があります。配線・半田付けを始める前に、写真と照らし合わせて配置を確認してください。
+
+#### 起動画面
+
+![起動画面](images/system_photo_01.png)
+
+#### 再生画面
+
+![再生画面](images/system_photo_02.png)
+
+Pico 2 + Pico Audio Pack（PCM5100A）+ Pico Display Pack 2.0
+
+## 表示仕様（Pico Display Pack 2.0）
+
+起動時に起動画面を表示し、初期化完了後は再生画面に切り替わります。Xボタンで起動画面と再生画面を切り替えます。診断画面や診断用USB CDCインターフェースはありません。
+
+### 再生画面
+
+- L/Rレベルメーターで左右の音声レベルを表示します。
+- 左右独立の11バンドFFTを表示します。
+- 現在のビット深度とサンプルレートを表示します。
+
+ピーク表示は入力信号に合わせて連続的に更新されるため、ちらついて見えることがあります。これは正常な動作です。FFTバーやメーターが動かない場合は、ホスト側の音量やミュート設定を確認してください。
+
+## 対応OS
+
+- Windows 11（26H2で動作確認済み。Foobar2000でWASAPIモードで再生するときは、音源のサンプリングレートとWindows11のサンプリングレートを合わせてから再生を行ってください。ASIO4ALLやASIOドライバー等の場合は、サンプリングレートが異なっていても正常に再生されます。ASIO4ALL2.22で確認済み。）
+- Android 16（Sony XQ-ES44スマートフォン。有償版Onkyo HF Player v2.15.2とFoobar2000 Android版 v2.26.1をOS標準オーディオドライバーで動作確認済み）
+
+Onkyo HF Playerは仕様上UAC1モードのみ対応しています。本プロジェクトでは、UAC1モードで上記Android端末との動作を確認しています。
+
+Onkyo HF Playerの独自ドライバーを使用せず、Android標準ドライバー（Foobar2000など）で使用する場合は、UAC1・UAC2の両モードで正常に動作することをSony XQ-ES44で確認しています。ただし、Onkyo HF Playerの独自ドライバーを使用した直後にAndroid標準ドライバーへ切り替える場合は、Androidに正しく認識させるため、USBコネクターを一度抜き差しして再接続してください。
+
+※ Android 16（Sony XQ-ES44）接続時のUSBテスター実測値は、4.972 V・0.140 A（約0.696 W）です。
+
+### Androidでのプツ音の検証
+
+本プロジェクトでも同様のプツ音が発生したため、フィードバック制限値を`FB_BASE_LIMIT_PPM=50`、`FB_BOOST_MAX_PPM=500`に変更しました。以下は派生版の[Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather)での検証結果であり、本プロジェクトでの測定値ではありません。
+
+2026年11月13日、Sony XQ-ES44（Android 16、標準オーディオドライバー）をUAC2で使用し、48kHz / 32bitで再生した際の観察結果です。Windows 11 26H2でも48kHz / 32bitで比較しました。
+
+- AndroidのYouTubeとMusicアプリでは、不定期に短いプツ音が発生しました。水位が約50%で安定した後にも発生し、Androidの音量を変更してもプツ音の大きさは変わりませんでした。
+- Androidで無音WAVを再生した際には、プツ音は確認されませんでした。無音再生時のUSB形式は未確認です。
+- `FB_BASE_LIMIT_PPM=50`、`FB_BOOST_MAX_PPM=500`の試験設定では、Windowsで水位が約3分40秒後に49.9%となり、音切れは確認されませんでした。Android版Foobar2000では水位が約2分27秒後に50%となり、プツ音は確認されませんでした。同設定のMusicアプリではプツ音が残りました。
+- MusicアプリでDSEE UltimateをOFFにすると、プツ音の頻度はかなり下がりましたが、不定期のプツ音と一瞬音が濁るような現象は残りました。
+
+フィードバック制限値を小さくすると改善する傾向がありましたが、原因は未特定です。アプリや音響効果、フィードバック制御との関係を引き続き確認する必要があります。Foobar2000の使用やDSEE Ultimateの無効化は回避策の候補です。上記設定での長時間の安定性は未確認です。補正幅を小さくしすぎると水位が漂い、音切れする可能性があります。
+
+## USB Audio Classの選択
+
+次のCMake設定で、ビルド時にUAC1 / UAC2を選択します。
+
+```cmake
+USB_AUDIO_CLASS_VERSION
+```
+
+| 値 | モード |
+|----|--------|
+| 1 | UAC1 |
+| 2 | UAC2 |
+| 未指定 | UAC2 |
+
+ビルド環境がない方は、リリースノートからUAC1・UAC2それぞれのファームウェアをダウンロードして書き込み、ご使用ください。
+
+### ビルドコマンド（2026-11-01確認）
+
+リポジトリのルートディレクトリで実行してください。
+
+※ビルド時は、事前に既存の`build`フォルダーを削除してCMakeキャッシュをクリアしてください。
+
+#### UAC1ビルド
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+#### UAC2ビルド
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
+
+cmake --build build
+```
+
+### Windows PowerShellでのビルド
+
+PowerShellで次のエラーが表示された場合：
+
+```text
+'cmake' is not recognized as an internal or external command
+```
+
+CMakeが利用可能か確認します。
+
+```powershell
+where.exe cmake
+```
+
+結果が表示されない場合は、CMakeをインストールしてください。
+
+```powershell
+winget install Kitware.CMake
+```
+
+インストール後、PowerShellを再起動します。CMakeがインストール済みでも見つからない場合は、インストール先をPATHに追加してください。
+
+```powershell
+$env:Path += ";C:\Program Files\CMake\bin"
+```
+
+恒久的に設定するには、Windowsのユーザー環境変数PATHにCMakeのインストール先を追加します。
+
+インストールを確認します。
+
+```powershell
+cmake --version
+```
+
+バージョンが表示されたら、構成とビルドを実行します。
+
+```powershell
+cd C:\path\to\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+UAC2をビルドする場合は、`USB_AUDIO_CLASS_VERSION=1` を `USB_AUDIO_CLASS_VERSION=2` に変更してください。
+
+SDK、コンパイラー、Ninjaに関するエラーが発生した場合は、Visual Studio CodeにRaspberry Pi Pico拡張機能をインストールし、次の環境を使用してください。
+
+- Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+
+### 生成されるファームウェア
+
+ビルドが成功すると、次のUF2ファイルが生成されます。
+
+#### UAC1
+
+```text
+build/src/Pico2_UAC12_USBDDC_Pure_audio_UAC1.uf2
+```
+
+#### UAC2
+
+```text
+build/src/Pico2_UAC12_USBDDC_Pure_audio_UAC2.uf2
+```
+
+書き込み手順：
+
+1. BOOTSELボタンを押したままにします。
+2. Pico 2をPCに接続します。
+3. RP2350ドライブが表示されます。
+4. 生成されたUF2ファイルをドライブにコピーします。
+
+### モード仕様
+
+#### UAC1（`USB_AUDIO_CLASS_VERSION=1`）
+
+- USB Audio Class 1.0
+- PCM 16bit / 24bit
+- 44.1kHz / 48kHz / 88.2kHz / 96kHz
+
+#### UAC2（`USB_AUDIO_CLASS_VERSION=2`）
+
+- USB Audio Class 2.0
+- PCM 16bit / 24bit / 32bit
+- サンプルレート上限はFull-Speed USBの帯域幅によって異なります
+
+UAC固有のディスクリプターと制御ハンドラーは、選択したモードに応じて切り替わります。以下のモジュールは共通です。
+
+- オーディオエンジン
+- リングバッファー
+- Async Feedback
+- FFT処理
+- 表示システム
+- I²S出力
+
+## 対応DAC
+
+- Pico Audio Pack（PCM5100A）
+
+Pico Audio Pack（PCM5100A）で動作を確認しています。
+
+※PCM5102A搭載のDACボードも所有していますが、本プロジェクトのコンセプト外のため、現時点では動作確認を行っていません。お問い合わせがあれば確認します。
+
+## USB入力仕様
+
+- USB Audio Class 1.0 または 2.0
+- Async Feedback Endpoint
+- ステレオPCM
+
+### UAC1
+
+| ビット深度 | サンプルレート |
+|------------|----------------|
+| 16bit | 44.1 / 48 / 88.2 / 96kHz |
+| 24bit | 44.1 / 48 / 88.2 / 96kHz |
+
+### UAC2
+
+| ビット深度 | サンプルレート |
+|------------|----------------|
+| 16bit | 44.1 / 48 / 88.2 / 96 / 176.4 / 192kHz |
+| 24bit | 44.1 / 48 / 88.2 / 96kHz |
+| 32bit | 44.1 / 48 / 88.2 / 96kHz |
+
+### 注意事項
+
+※RP2350 USB Device ControllerはFull-Speed USBのみをサポートします。
+
+Full-Speed USBでの現在の上限：
+
+| フォーマット | 最大レート |
+|--------------|------------|
+| UAC2 16bit | 192kHz |
+| UAC2 24bit | 96kHz |
+| UAC2 32bit | 96kHz |
+
+※24bit / 32bitの176.4kHzおよび192kHzはFull-Speed USBのパケットサイズ上限を超えるため、サポートしていません。
+
+※Onkyo HF PlayerはUAC1モードで動作確認しています。
+
+## I²S出力仕様
+
+- I²S
+- ステレオ
+- 32bit PCM形式
+- 入力サンプルレート追従
+- サンプルレート変換なし
+- オーバーサンプリングなし
+- オーバーサンプリング、FIRフィルター、サンプルレート変換を行わないI²S出力
+
+### 注意事項
+
+※ファームウェアは固定ゲイン比0.80に加え、ホストから受け取るUAC1/UAC2の音量設定（0～-64dB）とミュートをソフトウェアゲインに反映します。ホスト側の音量設定によって出力レベルが変わります。
+
+## 再生に関する注意
+
+- ※Windowsのオーディオ設定によって音切れが発生する場合があります
+- ※安定性は再生ソフト、ホスト性能、システム負荷に左右されます
+- ※サンプルレートの組み合わせによって、安定性が異なる場合があります
+
+音切れが発生する場合は、次の方法を試してください。
+
+- ASIOとWASAPIを切り替える
+- 再生サンプルレートを下げる
+- Windowsの出力サンプルレート設定を下げる
+
+## FFTスペクトル表示
+
+### リアルタイム11バンドFFTアナライザー
+
+表示デバイス：Pico Display Pack 2.0
+
+周波数帯：
+
+- 45Hz
+- 90Hz
+- 125Hz
+- 360Hz
+- 700Hz
+- 1.4kHz
+- 2.8kHz
+- 5.6kHz
+- 9.8kHz
+- 18kHz
+- 22kHz
+
+### FFT設定
+
+- `FFT_LEN = 2048`
+- 窓関数：ハン窓
+- 重み付け：A特性
+- Ring Buffer水位監視
+- Feedback制御の可視化
+
+RP2350の処理性能と低い表示遅延に合わせ、リアルタイムのFFTスペクトルとバッファー状態を表示します。
+
+## アーキテクチャ
+
+### ハードウェア
+
+- Raspberry Pi Pico 2（RP2350）
+
+### 開発環境
+
+**ビルド確認済み**
+
+- Raspberry Pi Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+- Visual Studio Code
+
+### 表示・解析用ハードウェア
+
+- Pico Display Pack 2.0
+- ドーターボードを介して接続
+
+### データ経路
+
+- TinyUSB UAC1 / UAC2クラス層
+- 共通オーディオ処理コア
+- DMA + PIOによる低遅延I²S出力
+
+### マルチコア処理
+
+#### Core0
+
+- LCD描画
+  - FFT表示
+  - バッファー水位表示
+- メインループで無信号状態を監視し、500ms経過後にバッファーを後処理
+- クロック切替制御
+  - 44.1kHz系：336MHz
+  - 48kHz系：360MHz
+- ソフトウェア音声ミュート（出力ゲイン制御）
+
+#### Core1
+
+- I²S出力処理
+- DMA転送処理
+- FFT処理
+  - ハン窓
+  - A特性計算
+
+### USB制御
+
+- TinyUSB UAC1 / UAC2切替層
+- 共通Async Feedbackクロック同期制御
+
+### タイミング制御
+
+- Core0メインループでの経過時間監視
+
+### RAM上での実行
+
+起動時にファームウェアをRAMへコピーし、RAM上で実行します。
+
+Flashクロック分周設定：
+
+```text
+Divider = 3
+```
+
+動作中に確認された値：
+
+| サンプルレート系統 | Flashクロック |
+|--------------------|---------------|
+| 44.1 / 88.2 / 176.4kHz | 112MHz |
+| 48 / 96 / 192kHz | 120MHz |
+
+## ピン配置
+
+### I²Sインターフェース
+
+| 機能 | GPIO |
+|------|------|
+| I²S DATA | GP9 |
+| I²S BCLK | GP10 |
+| I²S LRCK | GP11 |
+
+### Pico Display Pack 2.0
+
+| 機能 | GPIO |
+|------|------|
+| SPI / 制御インターフェース | GP16 - GP20 |
+
+### 画面操作ボタン
+
+| ボタン | GPIO | 用途 |
+|--------|------|------|
+| X | GP14 | 次の画面 |
+内部プルアップを有効にしています。
+
+### RGB LED
+
+GPIOリソースの競合を避けるため、Pico Display PackのRGB LED（GP6～GP8）は消灯状態にしています。現行ファームウェアではI²C出力およびGP5のDAC ENABLE信号は使用しません。
+
+## ビルドと使用方法
+
+※ビルド時は、事前に既存の`build`フォルダーを削除してキャッシュをクリアしてください。
+
+1. ドーターボードを介して各ハードウェアを接続します。
+2. Visual Studio CodeにRaspberry Pi Pico拡張機能をインストールします。
+3. このリポジトリをクローンします。
+4. Visual Studio Codeでプロジェクトをビルドします。
+5. Pico 2のBOOTSELボタンを押したままPCに接続します。
+6. RP2350のマスストレージデバイスが表示されます。
+7. 生成されたUF2ファイルをデバイスにコピーします。
+8. 再起動後、選択したUSB Audio Classデバイス（UAC1またはUAC2）として認識されます。
+
+推奨環境：
+
+- Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+
+## 開発の背景
+
+オーディオ処理経路を簡素化し、不要なソフトウェア処理を減らすために、プロジェクトを再設計しました。
+
+- ソフトウェアのオーバーサンプリングを削除
+- ソフトウェアのFIRフィルターを削除
+- 信号経路と処理経路を簡素化
+- LUFAからTinyUSBへ移行
+- UAC1 / UAC2共通アーキテクチャを採用
+- FFT表示とクリッピング保護を維持
+
+※PCM5100Aには、オーバーサンプリングとデジタルフィルター処理が内蔵されています。そのため、本プロジェクトではソフトウェアのオーバーサンプリング、FIRフィルター、サンプルレート変換を行いません。ただし、音量・ミュートのためのソフトウェアゲイン制御を行います。
+
+処理性能向上のため、RP2350はオーバークロック設定で動作します。評価時の確認用システムにはヒートシンクを取り付けています。
+
+### テスト環境
+
+#### ハードウェア
+
+- Raspberry Pi Pico 2（RP2350）
+- Pico Audio Pack（PCM5100A）
+- Pico Display Pack 2.0
+- Sony XQ-ES44スマートフォン
+
+#### ソフトウェア
+
+**Windows**
+
+- Windows 11 26H2
+- Foobar2000 v2.26.1 (x64)
+- ASIO4ALL 2.22
+
+**Android**
+
+- Android 16
+- Onkyo HF Player v2.15.2 UAC1版
+- Foobar2000 Android版 v2.26.1（ARM、OS標準オーディオドライバー） UAC1/2両版　
+
+## ライセンス
+
+MIT License
+
+Copyright (c) 2026 Toshimiyu
+
+## 参考資料
+
+- USB Audio Class 1.0 Specification
+- USB Audio Class 2.0 Specification
+- TinyUSB Project
+- Raspberry Pi Pico SDK v2.3.1
+- RP2350 Documentation
+- PCM5100A Datasheet
+- 参考にさせていただいたArqAlice様（Pico2UltraHiResUSBDDC）に感謝申し上げます
