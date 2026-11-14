@@ -9,10 +9,9 @@ Complete reference documentation for TinyUSB APIs, configuration, and supported 
 
    architecture
    usb_concepts
-   class/index
+   class_drivers
    boards
    dependencies
    concurrency
    device_issues
-   hardware-in-the-loop
    glossary

@@ -61,6 +61,7 @@ TU_VERIFY_STATIC(sizeof(desc_uac2_configuration) == TUD_CONFIG_DESC_LEN
                  + UAC2_FUNC_DESC_LEN_NUM,
                  "UAC2_FUNC_DESC_LEN_NUM mismatch");
 TU_VERIFY_STATIC(UAC2_EP_SZ_MAX <= 1023, "Full-Speed isochronous packet size limit exceeded");
+TU_VERIFY_STATIC(UAC2_FB_EP_SIZE == 4, "UAC2 feedback must be 4-byte 16.16");
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 {

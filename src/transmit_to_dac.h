@@ -13,7 +13,7 @@
 
 #define SIZE_DMA_TX_BUF ((96 * 2 * DMA_BLOCK_US) / 1000 + 64)
 
-// Two DMA transfer buffers are sufficient because they are used as a double buffer.
+// Maximum number of PCM blocks queued for DMA.
 #define SIZE_DMA_TX_BUF_STACK (DEPTH_DMA_TX_BUFFER)
 
 typedef struct
@@ -40,6 +40,6 @@ extern void set_pwm_isr_1(float period_us);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
 
-extern uint32_t dma_tx_pool_frames(void); // frames queued in the DMA pool (upper bound, includes the block being played)
+extern float i2s_actual_sample_rate(void);
 
 #endif /* _TRANSMIT_TO_DAC_H_ */

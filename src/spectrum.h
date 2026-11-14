@@ -17,7 +17,7 @@ void spectrum_init(void);
 void spectrum_set_sample_rate(uint32_t sample_rate);
 void spectrum_feed(float left_q31, float right_q31);
 void spectrum_feed_block(const float *left_q31, const float *right_q31, uint32_t length);
-// One analysis frame is processed in two calls so the caller can service the DMA chain in between.
+// One analysis frame is processed in two calls so the caller can refill DMA buffers in between.
 // _left() takes ownership of a ready frame (true = frame in progress); _right() must then be called
 // before _left() will accept another frame. _right() returns false if no frame is in progress.
 bool spectrum_process_left(uint8_t left[SPECTRUM_BAND_COUNT]);

@@ -67,9 +67,12 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 - FIRフィルターなし
 - オーバーサンプリング、FIRフィルター、サンプルレート変換を行わないI²S出力
 - DMA + PIOによる低遅延I²S転送
+- フィードバックの基準レートをPIOの実際の分周値から算出
 - RP2350デュアルコア対応
 - PICO_AUDIO_PACK対応
 - Pico Display Pack 2.0対応
+
+再生中にPCMが不足した場合、DMAは無音を補完し、データ到着後に再生を続けます。FIFO逼迫時はフレーム単位で古いデータの一部を破棄します。DMAは完了割り込みで次のブロックを開始するため、割り込みが長く遅れるとI²Sクロックが途切れることがあります。停止中やレート切替中のクロック継続は保証しません。
 
 ## ハードウェア写真
 
@@ -140,6 +143,15 @@ USB_AUDIO_CLASS_VERSION
 | 1 | UAC1 |
 | 2 | UAC2 |
 | 未指定 | UAC2 |
+
+フィードバック値は共通の16.16形式でTinyUSBに渡します。付属のTinyUSBが、Full-SpeedのUAC1では3バイトの10.14形式に変換し、UAC2ではWindows互換の4バイト16.16形式で送信します。外部のTinyUSBを指定する場合も、この変換と送信サイズに対応したバージョンが必要です。
+
+フィードバック形式の回帰テストは、ネイティブGCCとGNUリンカーがある環境で、リポジトリのルートから次のように実行できます（Windows PowerShellの例）。
+
+```powershell
+gcc -std=c11 -O2 -ffunction-sections -fdata-sections -I tests\feedback -I tinyusb\src tests\feedback\feedback_test.c '-Wl,--gc-sections' -o "$env:TEMP\feedback_test.exe"
+& "$env:TEMP\feedback_test.exe"
+```
 
 ビルド環境がない方は、リリースノートからUAC1・UAC2それぞれのファームウェアをダウンロードして書き込み、ご使用ください。
 

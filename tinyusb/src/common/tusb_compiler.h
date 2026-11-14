@@ -1,6 +1,25 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
- * SPDX-License-Identifier: MIT
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2019 Ha Thach (tinyusb.org)
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  *
  * This file is part of the TinyUSB stack.
  */
@@ -105,25 +124,6 @@
 #define TU_ARGS_APPLY_EXPAND_6(_X, _a1, _a2, _a3, _a4, _a5, _a6)           _X(_a1), TU_ARGS_APPLY_EXPAND_5(_X, _a2, _a3, _a4, _a5, _a6)
 #define TU_ARGS_APPLY_EXPAND_7(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7)      _X(_a1), TU_ARGS_APPLY_EXPAND_6(_X, _a2, _a3, _a4, _a5, _a6, _a7)
 #define TU_ARGS_APPLY_EXPAND_8(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8) _X(_a1), TU_ARGS_APPLY_EXPAND_7(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8)
-
-#define TU_ARGS_APPLY_EXPAND_9(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_8(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9)
-#define TU_ARGS_APPLY_EXPAND_10(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_9(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10)
-#define TU_ARGS_APPLY_EXPAND_11(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_10(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11)
-#define TU_ARGS_APPLY_EXPAND_12(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_11(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12)
-#define TU_ARGS_APPLY_EXPAND_13(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_12(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13)
-#define TU_ARGS_APPLY_EXPAND_14(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_13(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14)
-#define TU_ARGS_APPLY_EXPAND_15(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_14(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15)
-#define TU_ARGS_APPLY_EXPAND_16(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15, _a16) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_15(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15, _a16)
-#define TU_ARGS_APPLY_EXPAND_17(_X, _a1, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15, _a16, _a17) \
-  _X(_a1), TU_ARGS_APPLY_EXPAND_16(_X, _a2, _a3, _a4, _a5, _a6, _a7, _a8, _a9, _a10, _a11, _a12, _a13, _a14, _a15, _a16, _a17)
 
 //--------------------------------------------------------------------+
 // Macro for function default arguments

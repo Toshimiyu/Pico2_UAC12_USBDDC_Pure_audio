@@ -1,8 +1,26 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 Greg Davill
- * SPDX-FileCopyrightText: Copyright (c) 2023 Denis Krasutski
- * SPDX-FileCopyrightText: Copyright (c) 2022 Ha Thach (tinyusb.org)
- * SPDX-License-Identifier: MIT
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2022 Greg Davill
+ * Copyright (c) 2023 Denis Krasutski
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  *
  * This file is part of the TinyUSB stack.
  */
@@ -40,7 +58,17 @@ static xfer_ctl_t xfer_status[EP_MAX][2];
 /* Endpoint Buffer */
 TU_ATTR_ALIGNED(4) static uint8_t ep0_buffer[CFG_TUD_ENDPOINT0_SIZE];
 static bool ep0_tog;
-static bool reset_evt_pending;
+static bool ep_data_tog[EP_MAX][2];
+
+static void set_ep_toggle(uint8_t ep_num, tusb_dir_t ep_dir, bool data1) {
+  if (ep_dir == TUSB_DIR_IN) {
+    EP_TX_CTRL(ep_num) = (EP_TX_CTRL(ep_num) & ~(USBHS_EP_T_TOG_MASK)) |
+                         (data1 ? USBHS_EP_T_TOG_1 : USBHS_EP_T_TOG_0);
+  } else {
+    EP_RX_CTRL(ep_num) = (EP_RX_CTRL(ep_num) & ~(USBHS_EP_R_TOG_MASK)) |
+                         (data1 ? USBHS_EP_R_TOG_1 : USBHS_EP_R_TOG_0);
+  }
+}
 
 static void queue_in_packet(uint8_t ep_num, xfer_ctl_t* xfer) {
   uint16_t remaining = xfer->total_len - xfer->queued_len;
@@ -61,6 +89,7 @@ static void queue_in_packet(uint8_t ep_num, xfer_ctl_t* xfer) {
   } else if (xfer->is_iso) {
     EP_TX_CTRL(ep_num) = (EP_TX_CTRL(ep_num) & ~(USBHS_EP_T_RES_MASK)) | USBHS_EP_T_RES_NYET;
   } else {
+    set_ep_toggle(ep_num, TUSB_DIR_IN, ep_data_tog[ep_num][TUSB_DIR_IN]);
     EP_TX_CTRL(ep_num) = (EP_TX_CTRL(ep_num) & ~(USBHS_EP_T_RES_MASK)) | USBHS_EP_T_RES_ACK;
   }
 }
@@ -79,6 +108,7 @@ static void queue_out_packet(uint8_t ep_num, xfer_ctl_t* xfer) {
   } else if (xfer->is_iso) {
     EP_RX_CTRL(ep_num) = (EP_RX_CTRL(ep_num) & ~(USBHS_EP_R_RES_MASK)) | USBHS_EP_R_RES_NYET;
   } else {
+    set_ep_toggle(ep_num, TUSB_DIR_OUT, ep_data_tog[ep_num][TUSB_DIR_OUT]);
     EP_RX_CTRL(ep_num) = (EP_RX_CTRL(ep_num) & ~(USBHS_EP_R_RES_MASK)) | USBHS_EP_R_RES_ACK;
   }
 }
@@ -87,6 +117,10 @@ static void update_in(uint8_t rhport, uint8_t ep_num, bool force) {
   xfer_ctl_t* xfer = XFER_CTL_BASE(ep_num, TUSB_DIR_IN);
   if (!xfer->valid) {
     return;
+  }
+
+  if (!force && ep_num != 0 && !xfer->is_iso) {
+    ep_data_tog[ep_num][TUSB_DIR_IN] = !ep_data_tog[ep_num][TUSB_DIR_IN];
   }
 
   if (force || (xfer->total_len > xfer->queued_len)) {
@@ -117,6 +151,10 @@ static void update_out(uint8_t rhport, uint8_t ep_num, uint16_t rx_len) {
 
   xfer->queued_len += len;
 
+  if (ep_num != 0 && !xfer->is_iso) {
+    ep_data_tog[ep_num][TUSB_DIR_OUT] = !ep_data_tog[ep_num][TUSB_DIR_OUT];
+  }
+
   if ((xfer->queued_len == xfer->total_len) || (len < xfer->max_size)) {
     xfer->valid = false;
     if (ep_num == 0) {
@@ -137,25 +175,23 @@ static void update_out(uint8_t rhport, uint8_t ep_num, uint16_t rx_len) {
 
 bool dcd_init(uint8_t rhport, const tusb_rhport_init_t *rh_init) {
   (void)rhport;
+  (void)rh_init;
 
   memset(&xfer_status, 0, sizeof(xfer_status));
+  memset(ep_data_tog, 0, sizeof(ep_data_tog));
   ep0_tog = true;
-  reset_evt_pending = false;
 
   USBHSD->HOST_CTRL = 0x00;
   USBHSD->HOST_CTRL = USBHS_PHY_SUSPENDM;
 
   USBHSD->CONTROL = 0;
 
-  if (rh_init->speed == TUSB_SPEED_HIGH || rh_init->speed == TUSB_SPEED_AUTO) {
-    USBHSD->CONTROL = USBHS_DMA_EN | USBHS_INT_BUSY_EN | USBHS_HIGH_SPEED;
-  } else if (rh_init->speed == TUSB_SPEED_FULL) {
-    USBHSD->CONTROL = USBHS_DMA_EN | USBHS_INT_BUSY_EN | USBHS_FULL_SPEED;
-  } else if (rh_init->speed == TUSB_SPEED_LOW) {
-    USBHSD->CONTROL = USBHS_DMA_EN | USBHS_INT_BUSY_EN | USBHS_LOW_SPEED;
-  } else {
-    return false;
-  }
+  #if TUD_OPT_HIGH_SPEED
+  USBHSD->CONTROL = USBHS_DMA_EN | USBHS_INT_BUSY_EN | USBHS_HIGH_SPEED;
+  #else
+    #error OPT_MODE_FULL_SPEED not currently supported on CH32
+  USBHSD->CONTROL = USBHS_DMA_EN | USBHS_INT_BUSY_EN | USBHS_FULL_SPEED;
+  #endif
 
   USBHSD->INT_EN = 0;
   USBHSD->INT_EN = USBHS_SETUP_ACT_EN | USBHS_TRANSFER_EN | USBHS_BUS_RST_EN | USBHS_SUSPEND_EN;
@@ -178,7 +214,7 @@ bool dcd_init(uint8_t rhport, const tusb_rhport_init_t *rh_init) {
   xfer_status[0][TUSB_DIR_IN].max_size  = CFG_TUD_ENDPOINT0_SIZE;
 
   USBHSD->DEV_AD = 0;
-  dcd_connect(rhport);
+  USBHSD->CONTROL |= USBHS_DEV_PU_EN;
 
   return true;
 }
@@ -195,6 +231,8 @@ void dcd_int_disable(uint8_t rhport) {
 
 void dcd_edpt_close_all(uint8_t rhport) {
   (void)rhport;
+
+  memset(ep_data_tog, 0, sizeof(ep_data_tog));
 
   for (size_t ep = 1; ep < EP_MAX; ep++) {
     EP_TX_LEN(ep)  = 0;
@@ -216,18 +254,6 @@ void dcd_set_address(uint8_t rhport, uint8_t dev_addr) {
 
 void dcd_remote_wakeup(uint8_t rhport) {
   (void)rhport;
-}
-
-void dcd_connect(uint8_t rhport) {
-  (void)rhport;
-  USBHSD->HOST_CTRL |= USBHS_PHY_SUSPENDM;
-  USBHSD->CONTROL |= USBHS_DEV_PU_EN;
-}
-
-void dcd_disconnect(uint8_t rhport) {
-  (void)rhport;
-  USBHSD->CONTROL &= ~USBHS_DEV_PU_EN;
-  USBHSD->HOST_CTRL &= ~USBHS_PHY_SUSPENDM;
 }
 
 void dcd_sof_enable(uint8_t rhport, bool en) {
@@ -261,12 +287,12 @@ bool dcd_edpt_open(uint8_t rhport, const tusb_desc_endpoint_t *desc_edpt) {
 
   xfer_ctl_t *xfer = XFER_CTL_BASE(ep_num, dir);
   xfer->max_size   = tu_edpt_packet_size(desc_edpt);
+  ep_data_tog[ep_num][dir] = false;
 
   xfer->is_iso = (desc_edpt->bmAttributes.xfer == TUSB_XFER_ISOCHRONOUS);
   if (dir == TUSB_DIR_OUT) {
     USBHSD->ENDP_CONFIG |= (USBHS_EP0_R_EN << ep_num);
-    EP_RX_CTRL(ep_num) = USBHS_EP_R_RES_NAK | USBHS_EP_R_TOG_0 |
-                         (xfer->is_iso ? 0 : USBHS_EP_R_AUTOTOG);
+    EP_RX_CTRL(ep_num) = USBHS_EP_R_RES_NAK | USBHS_EP_R_TOG_0;
     if (xfer->is_iso == true) {
       USBHSD->ENDP_TYPE |= (USBHS_EP0_R_TYP << ep_num);
     }
@@ -277,8 +303,7 @@ bool dcd_edpt_open(uint8_t rhport, const tusb_desc_endpoint_t *desc_edpt) {
     }
     USBHSD->ENDP_CONFIG |= (USBHS_EP0_T_EN << ep_num);
     EP_TX_LEN(ep_num)  = 0;
-    EP_TX_CTRL(ep_num) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0 |
-                         (xfer->is_iso ? 0 : USBHS_EP_T_AUTOTOG);
+    EP_TX_CTRL(ep_num) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0;
   }
 
   return true;
@@ -293,11 +318,13 @@ void dcd_edpt_close(uint8_t rhport, uint8_t ep_addr) {
   if (dir == TUSB_DIR_OUT) {
     EP_RX_CTRL(ep_num)    = USBHS_EP_R_RES_NAK | USBHS_EP_R_TOG_0;
     EP_RX_MAX_LEN(ep_num) = 0;
+    ep_data_tog[ep_num][TUSB_DIR_OUT] = false;
     USBHSD->ENDP_TYPE &= ~(USBHS_EP0_R_TYP << ep_num);
     USBHSD->ENDP_CONFIG &= ~(USBHS_EP0_R_EN << ep_num);
   } else { // TUSB_DIR_IN
     EP_TX_CTRL(ep_num) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0;
     EP_TX_LEN(ep_num)  = 0;
+    ep_data_tog[ep_num][TUSB_DIR_IN] = false;
     USBHSD->ENDP_TYPE &= ~(USBHS_EP0_T_TYP << ep_num);
     USBHSD->ENDP_CONFIG &= ~(USBHS_EP0_T_EN << ep_num);
   }
@@ -339,19 +366,11 @@ void dcd_edpt_clear_stall(uint8_t rhport, uint8_t ep_addr) {
   const tusb_dir_t dir    = tu_edpt_dir(ep_addr);
 
   if (dir == TUSB_DIR_OUT) {
-    xfer_ctl_t *xfer = XFER_CTL_BASE(ep_num, TUSB_DIR_OUT);
-    EP_RX_CTRL(ep_num) = USBHS_EP_R_RES_NAK | USBHS_EP_R_TOG_0 |
-                         ((ep_num != 0 && !xfer->is_iso) ? USBHS_EP_R_AUTOTOG : 0);
-    if (xfer->valid) {
-      // A receive is still armed (the class driver considers it submitted and won't re-arm it);
-      // re-queue it (ACK/NYET) instead of leaving it NAKing, or the endpoint NAKs forever after
-      // clear-halt (usbtest toggle test 29 clears the halt on an armed bulk-OUT pipe).
-      queue_out_packet(ep_num, xfer);
-    }
+    EP_RX_CTRL(ep_num) = USBHS_EP_R_RES_NAK | USBHS_EP_R_TOG_0;
+    ep_data_tog[ep_num][TUSB_DIR_OUT] = false;
   } else {
-    xfer_ctl_t *xfer = XFER_CTL_BASE(ep_num, TUSB_DIR_IN);
-    EP_TX_CTRL(ep_num) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0 |
-                         ((ep_num != 0 && !xfer->is_iso) ? USBHS_EP_T_AUTOTOG : 0);
+    EP_TX_CTRL(ep_num) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0;
+    ep_data_tog[ep_num][TUSB_DIR_IN] = false;
   }
 }
 
@@ -390,78 +409,20 @@ void dcd_int_handler(uint8_t rhport) {
   uint8_t int_flag   = USBHSD->INT_FG;
   uint8_t int_status = USBHSD->INT_ST;
 
-  if (int_flag & USBHS_BUS_RST_FLAG) {
-    // Reset invalidates pending completions, so handle it before TRANSFER or SETUP.
-    // The first SOF follows speed negotiation and completes the reset notification.
-    reset_evt_pending = true;
-    USBHSD->INT_EN |= USBHS_SOF_ACT_EN;
-    dcd_event_bus_signal(rhport, DCD_EVENT_BUS_RESET_START, true);
-
-    USBHSD->DEV_AD = 0;
-    ep0_tog = true;
-    EP_RX_CTRL(0) = USBHS_EP_R_RES_ACK | USBHS_EP_R_TOG_0;
-    EP_TX_CTRL(0) = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0;
-    // The flags do not identify which side of reset a pending transaction belongs to.
-    // Clear only the reset/transaction flags observed in the entry snapshot.
-    USBHSD->INT_FG = int_flag & (USBHS_BUS_RST_FLAG | USBHS_TRANSFER_FLAG | USBHS_SETUP_FLAG);
-  } else if (int_flag & USBHS_TRANSFER_FLAG) {
+  if (int_flag & USBHS_TRANSFER_FLAG) {
     const uint8_t token = int_status & MASK_UIS_TOKEN;
     const uint8_t ep_num = int_status & MASK_UIS_ENDP;
     const uint16_t len = USBHSD->RX_LEN;
-    bool released = false;
 
     if (token == USBHS_TOKEN_PID_SOF) {
-      if (reset_evt_pending) {
-        reset_evt_pending = false;
-        tusb_speed_t actual_speed;
-        switch (USBHSD->SPEED_TYPE & USBHS_SPEED_TYPE_MASK) {
-          case USBHS_SPEED_TYPE_FULL:
-            actual_speed = TUSB_SPEED_FULL;
-            break;
-          case USBHS_SPEED_TYPE_LOW:
-            actual_speed = TUSB_SPEED_LOW;
-            break;
-          default:
-            actual_speed = TUSB_SPEED_HIGH;
-            break;
-        }
-        dcd_event_bus_reset(rhport, actual_speed, true);
-        USBHSD->INT_EN &= ~USBHS_SOF_ACT_EN;
-      } else {
-        uint32_t frame_count = USBHSD->FRAME_NO & USBHS_FRAME_NO_NUM_MASK;
-        dcd_event_sof(rhport, frame_count, true);
-      }
-    // Drop an OUT packet whose data toggle doesn't match what we expect -- a host retransmit
-    // after a lost ACK, or a host that doesn't alternate DATA0/DATA1.
-    } else if (token == USBHS_TOKEN_PID_OUT && (int_status & USBHS_DEV_UIS_TOG_OK)) {
-      if (ep_num != 0) {
-        // Release early: ISO transfers ignore INT_BUSY and would overwrite
-        // the shared INT_ST/RX_LEN of this pending completion.
-        xfer_ctl_t const *const out = XFER_CTL_BASE(ep_num, TUSB_DIR_OUT);
-        // Keep the receive armed if update_out() rejects this packet's toggle.
-        if (!out->is_iso) {
-          EP_RX_CTRL(ep_num) = (EP_RX_CTRL(ep_num) & ~(USBHS_EP_R_RES_MASK)) | USBHS_EP_R_RES_NAK;
-        }
-        USBHSD->INT_FG = USBHS_TRANSFER_FLAG;
-        released = true;
-      }
+      uint32_t frame_count = USBHSD->FRAME_NO & USBHS_FRAME_NO_NUM_MASK;
+      dcd_event_sof(rhport, frame_count, true);
+    } else if (token == USBHS_TOKEN_PID_OUT) {
       update_out(rhport, ep_num, len);
     } else if (token == USBHS_TOKEN_PID_IN) {
-      if (ep_num != 0) {
-        // Release early, as for OUT.
-        xfer_ctl_t const *const in = XFER_CTL_BASE(ep_num, TUSB_DIR_IN);
-        if (!in->is_iso) {
-          EP_TX_CTRL(ep_num) = (EP_TX_CTRL(ep_num) & ~(USBHS_EP_T_RES_MASK)) | USBHS_EP_T_RES_NAK;
-        }
-        USBHSD->INT_FG = USBHS_TRANSFER_FLAG;
-        released = true;
-      }
       update_in(rhport, ep_num, false);
     }
-    // Don't clear a completion that arrived after an early release.
-    if (!released) {
-      USBHSD->INT_FG = (int_flag & USBHS_TRANSFER_FLAG); /* Clear flag */
-    }
+    USBHSD->INT_FG = (int_flag & USBHS_TRANSFER_FLAG); /* Clear flag */
   } else if (int_flag & USBHS_SETUP_FLAG) {
     tusb_control_request_t const* setup =
         (tusb_control_request_t const*) ep0_buffer;
@@ -472,6 +433,35 @@ void dcd_int_handler(uint8_t rhport) {
     dcd_event_setup_received(0, ep0_buffer, true);
 
     USBHSD->INT_FG = USBHS_SETUP_FLAG; /* Clear flag */
+  } else if (int_flag & USBHS_BUS_RST_FLAG) {
+    // TODO CH32 does not detect actual speed at this time (should be known at end of reset)
+    // This interrupt probably triggered at start of bus reset
+    //    tusb_speed_t actual_speed;
+    //    switch(USBHSD->SPEED_TYPE & USBHS_SPEED_TYPE_MASK){
+    //      case USBHS_SPEED_TYPE_HIGH:
+    //        actual_speed = TUSB_SPEED_HIGH;
+    //        break;
+    //      case USBHS_SPEED_TYPE_FULL:
+    //        actual_speed = TUSB_SPEED_FULL;
+    //        break;
+    //      case USBHS_SPEED_TYPE_LOW:
+    //        actual_speed = TUSB_SPEED_LOW;
+    //        break;
+    //      default:
+    //        TU_ASSERT(0,);
+    //        break;
+    //    }
+    //    dcd_event_bus_reset(0, actual_speed, true);
+
+    dcd_event_bus_reset(0, TUSB_SPEED_HIGH, true);
+
+    USBHSD->DEV_AD = 0;
+    memset(ep_data_tog, 0, sizeof(ep_data_tog));
+    ep0_tog = true;
+    EP_RX_CTRL(0)  = USBHS_EP_R_RES_ACK | USBHS_EP_R_TOG_0;
+    EP_TX_CTRL(0)  = USBHS_EP_T_RES_NAK | USBHS_EP_T_TOG_0;
+
+    USBHSD->INT_FG = USBHS_BUS_RST_FLAG; /* Clear flag */
   } else if (int_flag & USBHS_SUSPEND_FLAG) {
     dcd_event_t event = {.rhport = rhport, .event_id = DCD_EVENT_SUSPEND};
     dcd_event_handler(&event, true);

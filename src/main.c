@@ -123,7 +123,7 @@ static void service_idle_cleanup(void)
 	if (now_playing == last_observed_now_playing && !is_cleared_buffer)
 	{
 		clear_ringbuffer(&buffer_audio);
-		renew_clock();
+		dma_stop_and_clear();
 		now_playing = 0;
 		last_observed_now_playing = 0;
 		last_audio_activity_us = time_us_32();

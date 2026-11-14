@@ -43,10 +43,8 @@ volatile bool audio_data_seen = false;
 
 // Ring buffer watermarks (buffer_audio, PCM frames)
 #define FB_TARGET_LEVEL (SIZE_BUFFER_FB_THRESHOLD)
-#define LEVEL_LOW_MARK (SIZE_AUDIO_RING_FRAMES / 32)						   // below -> UNDERFLOW_FATAL
 #define LEVEL_HIGH_MARK (SIZE_AUDIO_RING_FRAMES - SIZE_AUDIO_RING_FRAMES / 32)   // above -> OVERFLOW_FATAL
 #define LEVEL_OVERFLOW_RECOVER (FB_TARGET_LEVEL + SIZE_AUDIO_RING_FRAMES / 8) // OVERFLOW_FATAL -> BUFFERING
-#define LEVEL_UNDERFLOW_RECOVER (FB_TARGET_LEVEL / 2)					   // UNDERFLOW_FATAL -> BUFFERING
 
 // PI controller (units: Hz of requested sample rate per input sample of level error)
 #define FB_KP (0.50f)			   // proportional [Hz / sample]
@@ -56,7 +54,7 @@ volatile bool audio_data_seen = false;
 #define FB_BASE_LIMIT_PPM  (50.0f)
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
-#define FB_BOOST_MAX_PPM   (500.0f)
+#define FB_BOOST_MAX_PPM   (100.0f)
 
 // Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
 // Worst case drain = (Ring 2048 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 69 ms.
@@ -351,7 +349,7 @@ static void service_rx(void)
 
 	const uint32_t frame_bytes = 2u * bps;
 	const usb_audio_state_t st = audio_state_machine;
-	if (st == USB_AUDIO_IDLE || st == USB_AUDIO_OVERFLOW_FATAL || st == USB_AUDIO_SWITCHING)
+	if (st == USB_AUDIO_IDLE || st == USB_AUDIO_SWITCHING)
 	{
     	const uint16_t discard = tud_audio_available();
 
@@ -373,9 +371,24 @@ static void service_rx(void)
 	const uint16_t fifo_depth = CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ;
 	if (avail > (fifo_depth / 4u) * 3u)
 	{
-    	tud_audio_clear_ep_out_ff();
-    	return;
+		const uint16_t retain = (uint16_t)((fifo_depth / 2u / frame_bytes) * frame_bytes);
+		uint32_t discard = avail - retain;
+		while (discard != 0)
+		{
+			uint16_t n = (uint16_t)(discard > sizeof(rx_raw) ? sizeof(rx_raw) : discard);
+			n = (uint16_t)((n / frame_bytes) * frame_bytes);
+			if (n == 0 || tud_audio_read(rx_raw, n) != n)
+			{
+				discard_invalid_pcm();
+				return;
+			}
+			discard -= n;
+		}
+		avail = tud_audio_available();
 	}
+
+	if (st == USB_AUDIO_OVERFLOW_FATAL)
+		return;
 
 	while (avail >= frame_bytes)
 	{
@@ -439,29 +452,29 @@ static void service_rx(void)
 }
 
 //--------------------------------------------------------------------+
-// State machine (IDLE / BUFFERING / STREAMING / OVERFLOW_FATAL / UNDERFLOW_FATAL)
+// State machine (IDLE / BUFFERING / STREAMING / OVERFLOW_FATAL / SWITCHING)
 //--------------------------------------------------------------------+
 static void service_state(void)
 {
 	const int32_t level = (int32_t)audio_ring_total_frames();
-	const int32_t dma_pool_frames = (int32_t)dma_tx_pool_frames();
-	const int32_t ring_pool_level = level + dma_pool_frames;
-
 	switch (audio_state_machine)
 	{
 	case USB_AUDIO_BUFFERING:
 	{
-    	uint32_t prefill_frames =
-        	(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
+		uint32_t prefill_frames =
+			(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
 
-    	if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
-        	prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
+		if (prefill_frames < FB_TARGET_LEVEL)
+			prefill_frames = FB_TARGET_LEVEL;
 
-    	if ((uint32_t)level >= prefill_frames)
-    	{
-        	set_state(USB_AUDIO_STREAMING);
-    	}
-    	break;
+		if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
+			prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
+
+		if ((uint32_t)level >= prefill_frames)
+		{
+			set_state(USB_AUDIO_STREAMING);
+		}
+		break;
 	}
 
 	case USB_AUDIO_STREAMING:
@@ -469,21 +482,11 @@ static void service_state(void)
 		{
 			set_state(USB_AUDIO_OVERFLOW_FATAL);
 		}
-		else if (ring_pool_level <= LEVEL_LOW_MARK)
-		{
-			set_state(USB_AUDIO_UNDERFLOW_FATAL);
-		}
 		break;
 
 	case USB_AUDIO_OVERFLOW_FATAL:
-		// DMA / PIO keep draining the buffer; USB data is discarded in service_rx()
+		// DMA / PIO keep draining; retain FIFO data until it approaches capacity.
 		if (level <= LEVEL_OVERFLOW_RECOVER)
-			set_state(USB_AUDIO_BUFFERING);
-		break;
-
-	case USB_AUDIO_UNDERFLOW_FATAL:
-		// USB data keeps accumulating
-		if (level >= LEVEL_UNDERFLOW_RECOVER)
 			set_state(USB_AUDIO_BUFFERING);
 		break;
 
@@ -602,9 +605,10 @@ fb.integ_hz = integ_next;
 
 }
 
-const float rate_hz = (float)fs + adj_hz;
+const float rate_hz = i2s_actual_sample_rate() + adj_hz;
 
-// 16.16 samples per 1 ms frame
+// TinyUSB's feedback API always accepts 16.16 samples per 1 ms frame.
+// The driver converts it to 3-byte 10.14 for UAC1; UAC2 remains 4-byte 16.16.
 const uint32_t value = (uint32_t)((double)rate_hz * 65.536 + 0.5);
 if (fb.force_send || value != fb.last_fb)
 {

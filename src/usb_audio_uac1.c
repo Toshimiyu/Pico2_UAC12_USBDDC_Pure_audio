@@ -7,6 +7,7 @@
 #include "common.h"
 
 static const uint32_t uac1_sample_rates[] = {44100, 48000, 88200, 96000};
+static uint16_t uac1_volume_resolution = VOLUME_RESOLUTION;
 
 const uint32_t *usb_audio_class_sample_rates(uint8_t *count)
 {
@@ -76,6 +77,7 @@ TU_VERIFY_STATIC(UAC1_FUNC_DESC_LEN_NUM == 8 + TUD_AUDIO10_DESC_STD_AC_LEN
                  + TUD_AUDIO10_DESC_STD_AS_LEN + 2 * UAC1_AS_ALT_LEN,
                  "UAC1_FUNC_DESC_LEN_NUM mismatch");
 TU_VERIFY_STATIC(UAC1_EP_SZ_MAX <= 1023, "Full-Speed isochronous packet size limit exceeded");
+TU_VERIFY_STATIC(UAC1_FB_EP_SIZE == 3, "UAC1 feedback must be 3-byte 10.14");
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 {
@@ -119,7 +121,7 @@ static bool feature_unit_get_request(uint8_t rhport, tusb_control_request_t cons
         value = MAX_VOLUME;
         break;
     case AUDIO10_CS_REQ_GET_RES:
-        value = VOLUME_RESOLUTION;
+        value = (int16_t)uac1_volume_resolution;
         break;
     default:
         return false;
@@ -134,7 +136,23 @@ static bool feature_unit_set_request(tusb_control_request_t const *request, cons
     const uint8_t selector = TU_U16_HIGH(request->wValue);
     const uint8_t channel = TU_U16_LOW(request->wValue);
 
-    if (channel != 0 || request->bRequest != AUDIO10_CS_REQ_SET_CUR)
+    if (channel != 0)
+        return false;
+
+    if (selector == AUDIO10_FU_CTRL_VOLUME
+        && request->bRequest == AUDIO10_CS_REQ_SET_RES
+        && request->wLength == 2)
+    {
+        const uint16_t resolution =
+            (uint16_t)buffer[0] | ((uint16_t)buffer[1] << 8);
+        if (resolution == 0u || (resolution & 0x8000u) != 0u)
+            return false;
+
+        uac1_volume_resolution = resolution;
+        return true;
+    }
+
+    if (request->bRequest != AUDIO10_CS_REQ_SET_CUR)
         return false;
 
     if (selector == AUDIO10_FU_CTRL_MUTE && request->wLength == 1)

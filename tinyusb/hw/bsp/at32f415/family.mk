@@ -34,5 +34,4 @@ SRC_S += ${AT32_SDK_LIB}/cmsis/cm4/device_support/startup/gcc/startup_${AT32_FAM
 
 LD_FILE ?= ${AT32_SDK_LIB}/cmsis/cm4/device_support/startup/gcc/linker/${MCU_LINKER_NAME}_FLASH.ld
 
-PROBE_RS_CHIP = ${MCU_VARIANT}
-flash: flash-probe-rs
+flash: flash-atlink

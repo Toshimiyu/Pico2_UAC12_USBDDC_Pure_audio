@@ -62,5 +62,4 @@ LD_FILE ?= ${AT32_SDK_LIB}/cmsis/cm4/device_support/startup/gcc/linker/${MCU_LIN
 # For freeRTOS port source
 FREERTOS_PORTABLE_SRC = $(FREERTOS_PORTABLE_PATH)/ARM_CM4F
 
-PROBE_RS_CHIP = ${MCU_VARIANT}
-flash: flash-probe-rs
+flash: flash-atlink

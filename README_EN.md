@@ -76,9 +76,12 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - No FIR filtering
 - I²S output without oversampling, FIR filtering, or sample-rate conversion
 - Low-latency I²S transfer using DMA + PIO
+- Feedback baseline derived from the actual PIO clock divider
 - RP2350 dual-core support
 - PICO_AUDIO_PACK support
 - Pico Display Pack 2.0 support
+
+During playback, DMA fills PCM underruns with silence and resumes when data arrives. If the USB FIFO approaches capacity, some oldest data is discarded on frame boundaries. DMA starts each block from its completion interrupt, so long interrupt delays can interrupt the I²S clock. Clock continuity while stopped or changing rates is not guaranteed.
 
 ---
 
@@ -155,6 +158,15 @@ USB_AUDIO_CLASS_VERSION
 | 1 | UAC1 |
 | 2 | UAC2 |
 | Not specified | UAC2 |
+
+The shared feedback controller passes 16.16 values to TinyUSB. The bundled TinyUSB converts them to 3-byte 10.14 for Full-Speed UAC1 and sends 4-byte 16.16 for UAC2 for Windows compatibility. An externally selected TinyUSB must support the same conversion and transfer sizes.
+
+With a native GCC and GNU linker, run the feedback-format regression test from the repository root (Windows PowerShell example):
+
+```powershell
+gcc -std=c11 -O2 -ffunction-sections -fdata-sections -I tests\feedback -I tinyusb\src tests\feedback\feedback_test.c '-Wl,--gc-sections' -o "$env:TEMP\feedback_test.exe"
+& "$env:TEMP\feedback_test.exe"
+```
 
 If you don't have a build environment, download the UAC1 or UAC2 firmware from the release notes, flash it, and use it.
 

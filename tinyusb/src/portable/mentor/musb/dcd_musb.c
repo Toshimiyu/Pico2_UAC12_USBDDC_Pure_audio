@@ -1,8 +1,26 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2021 Koji Kitayama
- * SPDX-FileCopyrightText: Copyright (c) 2024, Brent Kowal (Analog Devices, Inc)
- * SPDX-FileCopyrightText: Copyright (c) 2021 Ha Thach (tinyusb.org)
- * SPDX-License-Identifier: MIT
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2021 Koji KITAYAMA
+ * Copyright (c) 2024, Brent Kowal (Analog Devices, Inc)
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  *
  * This file is part of the TinyUSB stack.
  */
@@ -24,8 +42,6 @@
   #include "musb_ti.h"
 #elif defined(TUP_USBIP_MUSB_ADI)
   #include "musb_max32.h"
-#elif defined(TUP_USBIP_MUSB_PY32)
-  #include "musb_py32.h"
 #else
   #error "Unsupported MCU"
 #endif
@@ -47,7 +63,6 @@ typedef struct {
   };
   uint16_t  length;    /* the number of bytes in the buffer */
   uint16_t  remaining; /* the number of bytes remaining in the buffer */
-  uint16_t  mps;       /* maximum packet size */
   bool      armed;     /* true while a transfer is posted */
   bool      use_fifo;  /* true: buf is tu_fifo_t*; false: buf is plain byte pointer. */
 } pipe_state_t;
@@ -162,14 +177,6 @@ TU_ATTR_ALWAYS_INLINE static inline pipe_state_t* pipe_get(uint8_t epnum, tusb_d
   return &_dcd.pipe[idx];
 }
 
-TU_ATTR_ALWAYS_INLINE static inline uint16_t musb_mps_to_maxp(uint16_t mps) {
-#if defined(TUP_USBIP_MUSB_PY32)
-  return (uint8_t) ((mps + 7u) / 8u);
-#else
-  return mps;
-#endif
-}
-
 //--------------------------------------------------------------------
 // HW FIFO Helper
 // Note: Index register is already set by caller
@@ -234,12 +241,7 @@ TU_ATTR_ALWAYS_INLINE static inline bool hwfifo_config(musb_regs_t* musb, unsign
                                                        bool double_packet) {
   (void) mps;
 
-  #if defined(TUP_USBIP_MUSB_PY32)
-  (void) musb; (void) is_rx; (void) double_packet;
-  // Puya FIFO sizes: EP0 = 64 B, EP1 = 512 B, EP2..4 = 128 B, EP5 = 64 B, shared between IN and OUT.
-  static const uint16_t py32_fifo_size[] = { 64, 512, 128, 128, 128, 64 };
-  return epnum < TU_ARRAY_SIZE(py32_fifo_size) && mps <= py32_fifo_size[epnum];
-  #elif defined(TUP_USBIP_MUSB_ADI)
+  #if defined(TUP_USBIP_MUSB_ADI)
   // AnalogDevice FIFO sizes: EP1..7 = 512 B, EP8..9 = 2048 B, EP10..11 = 4096 B.
   // DPB requires FIFO >= 2 * MPS. For HS bulk (MPS=512) only EP >= 8 qualifies.
   // Force single-buffered on EP < 8 even if the caller requested DPB.
@@ -267,23 +269,10 @@ TU_ATTR_ALWAYS_INLINE static inline bool hwfifo_config(musb_regs_t* musb, unsign
 #endif
 
 // Flush FIFO and clear data toggle
-static void hwfifo_flush(musb_regs_t* musb, unsigned epnum, unsigned is_rx, bool clear_dtog) {
+TU_ATTR_ALWAYS_INLINE static inline void hwfifo_flush(musb_regs_t* musb, unsigned epnum, unsigned is_rx, bool clear_dtog) {
   (void) epnum;
   const uint8_t csrl_dtog = clear_dtog ? MUSB_CSRL_CLEAR_DATA_TOGGLE(is_rx) : 0;
   musb_ep_maxp_csr_t* maxp_csr = &musb->indexed_csr.maxp_csr[is_rx];
-  if (!is_rx) {
-    // FIFONE, not TXRDY: a double-packet FIFO clears TXRDY once a lone packet is loaded (TM4C123GH6PM
-    // DS p1170). FIFONE is written back as 1 like Linux does, it is write-0-to-clear (MAX32665 UG p422).
-    uint8_t csrl = maxp_csr->csrl;
-    for (unsigned i = 0; i < 2 && (csrl & MUSB_TXCSRL1_FIFONE); i++) {
-      maxp_csr->csrl = MUSB_CSRL_FLUSH_FIFO(0) | MUSB_TXCSRL1_FIFONE | csrl_dtog;
-      unsigned spin = 1000;
-      do {
-        csrl = maxp_csr->csrl;
-      } while ((csrl & MUSB_CSRL_FLUSH_FIFO(0)) && --spin); // self-clears once its packet is gone
-    }
-    return;
-  }
   // may need to flush twice for double packet
   for (unsigned i=0; i<2; i++) {
     if (maxp_csr->csrl & MUSB_CSRL_PACKET_READY(is_rx)) {
@@ -295,7 +284,7 @@ static void hwfifo_flush(musb_regs_t* musb, unsigned epnum, unsigned is_rx, bool
 // write to txfifo using pipe_state_t info
 static void pipe_write(musb_regs_t* musb_regs, pipe_state_t* pipe, uint8_t epnum) {
   musb_ep_csr_t* ep_csr = &musb_regs->indexed_csr;
-  const uint16_t mps = pipe->mps;
+  const uint16_t mps = ep_csr->tx_maxp & MUSB_TXMAXP_PACKET_SIZE_M;
   const uint16_t xact_len = tu_min16(mps, pipe->remaining);
   volatile void *hwfifo = &musb_regs->fifo[epnum];
   if (xact_len) {
@@ -321,12 +310,6 @@ static void process_epin_isr(uint8_t rhport, musb_regs_t *musb_regs, uint8_t epn
   }
 
   pipe_state_t* pipe = pipe_get(epnum, TUSB_DIR_IN);
-  // No active transfer: a halt/abort disarmed the pipe (armed=false) but may leave remaining>0.
-  // Do not keep loading the aborted transfer — that would re-fill the just-flushed FIFO and the
-  // next (re-armed) transfer's data would stack on top (host sees an oversized packet -> babble).
-  if (!pipe->armed) {
-    return;
-  }
   if (pipe->remaining > 0) {
     pipe_write(musb_regs, pipe, epnum);
   } else {
@@ -349,7 +332,7 @@ static void process_epin_isr(uint8_t rhport, musb_regs_t *musb_regs, uint8_t epn
 // release the FIFO slot by clearing RXRDY. return true if short packet
 static bool pipe_read(musb_regs_t* musb_regs, pipe_state_t* pipe, uint8_t epnum) {
   musb_ep_csr_t* ep_csr = &musb_regs->indexed_csr; // index already set in process_epout_isr()
-  const uint16_t mps = pipe->mps;
+  const uint16_t mps = ep_csr->rx_maxp & MUSB_RXMAXP_PACKET_SIZE_M;
   const uint16_t rx_count = ep_csr->rx_count;
   const uint16_t xact_len = tu_min16(tu_min16(pipe->remaining, mps), rx_count);
   volatile void *hwfifo = &musb_regs->fifo[epnum];
@@ -661,11 +644,7 @@ static void process_bus_reset_isr(uint8_t rhport) {
     hwfifo_reset(musb, i, 0);
     hwfifo_reset(musb, i, 1);
   }
-#if defined(TUP_USBIP_MUSB_PY32)
-  dcd_event_bus_reset(rhport, TUSB_SPEED_FULL, true);
-#else
   dcd_event_bus_reset(rhport, (musb->power & MUSB_POWER_HSMODE) ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL, true);
-#endif
 }
 
 /*------------------------------------------------------------------
@@ -674,11 +653,6 @@ static void process_bus_reset_isr(uint8_t rhport) {
 
 #if CFG_TUSB_DEBUG >= MUSB_DEBUG
 static void print_musb_info(musb_regs_t* musb_regs) {
-#if defined(TUP_USBIP_MUSB_PY32)
-  (void) musb_regs;
-  // musb discovery fields not present
-  TU_LOG1("musb py32 fixed full-speed configuration\r\n");
-#else
   // print version, epinfo, raminfo, config_data0, fifo_size
   TU_LOG1("musb version = %u.%u\r\n", musb_regs->hwvers_bit.major, musb_regs->hwvers_bit.minor);
   TU_LOG1("Number of endpoints: %u TX, %u RX\r\n", musb_regs->epinfo_bit.tx_ep_num, musb_regs->epinfo_bit.rx_ep_num);
@@ -694,7 +668,6 @@ static void print_musb_info(musb_regs_t* musb_regs) {
     musb_regs->index = i;
     TU_LOG1("FIFO %u Size: TX %u RX %u\r\n", i, musb_regs->indexed_csr.fifo_size_bit.tx, musb_regs->indexed_csr.fifo_size_bit.rx);
   }
-#endif
 #endif
 }
 #endif
@@ -751,18 +724,6 @@ void dcd_remote_wakeup(uint8_t rhport) {
   musb_regs->power &= ~MUSB_POWER_RESUME;
 }
 
-#if defined(TUP_USBIP_MUSB_PY32)
-void dcd_connect(uint8_t rhport)
-{
-  (void) rhport;
-}
-
-void dcd_disconnect(uint8_t rhport)
-{
-  (void) rhport;
-}
-#else
-
 // Connect by enabling internal pull-up resistor on D+/D-
 void dcd_connect(uint8_t rhport)
 {
@@ -777,8 +738,6 @@ void dcd_disconnect(uint8_t rhport)
   musb_regs_t* musb_regs = MUSB_REGS(rhport);
   musb_regs->power &= ~MUSB_POWER_SOFTCONN;
 }
-
-#endif
 
 void dcd_sof_enable(uint8_t rhport, bool en)
 {
@@ -803,7 +762,6 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * ep_desc) {
   pipe->buf       = NULL;
   pipe->length    = 0;
   pipe->remaining = 0;
-  pipe->mps       = (uint16_t) mps;
   pipe->armed     = false;
 
   musb_regs_t* musb = MUSB_REGS(rhport);
@@ -811,7 +769,7 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * ep_desc) {
   const uint8_t is_rx = (1 - epdir);
   musb_ep_maxp_csr_t* maxp_csr = &ep_csr->maxp_csr[is_rx];
 
-  maxp_csr->maxp = musb_mps_to_maxp((uint16_t) mps);
+  maxp_csr->maxp = mps;
   maxp_csr->csrh = 0;
 #if MUSB_CFG_SHARED_FIFO
   if (epdir) {
@@ -822,7 +780,7 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * ep_desc) {
   hwfifo_flush(musb, epn, is_rx, true);
 
   TU_ASSERT(hwfifo_config(musb, epn, is_rx, mps, ep_desc->bmAttributes.xfer == TUSB_XFER_BULK));
-  musb->intren_ep[is_rx ^ MUSB_INTR_EP_TX_RX_SWAP] |= TU_BIT(epn);
+  musb->intren_ep[is_rx] |= TU_BIT(epn);
 
   return true;
 }
@@ -833,11 +791,8 @@ bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet
   musb_regs_t* musb = MUSB_REGS(rhport);
   musb_ep_csr_t* ep_csr = get_ep_csr(musb, epn);
   const uint8_t is_rx = 1 - dir_in;
-  pipe_state_t *pipe = pipe_get(epn, dir_in);
-  pipe->mps = largest_packet_size;
   ep_csr->maxp_csr[is_rx].csrh = 0;
-  TU_ASSERT(hwfifo_config(musb, epn, is_rx, largest_packet_size, true));
-  return true;
+  return hwfifo_config(musb, epn, is_rx, largest_packet_size, true);
 }
 
 bool dcd_edpt_iso_activate(uint8_t rhport, tusb_desc_endpoint_t const *ep_desc ) {
@@ -853,7 +808,6 @@ bool dcd_edpt_iso_activate(uint8_t rhport, tusb_desc_endpoint_t const *ep_desc )
   pipe->buf       = NULL;
   pipe->length    = 0;
   pipe->remaining = 0;
-  pipe->mps       = (uint16_t) mps;
   pipe->armed     = false;
 
   musb_regs_t* musb = MUSB_REGS(rhport);
@@ -861,7 +815,7 @@ bool dcd_edpt_iso_activate(uint8_t rhport, tusb_desc_endpoint_t const *ep_desc )
   const uint8_t is_rx = 1 - dir_in;
   musb_ep_maxp_csr_t* maxp_csr = &ep_csr->maxp_csr[is_rx];
 
-  maxp_csr->maxp = musb_mps_to_maxp((uint16_t) mps);
+  maxp_csr->maxp = mps;
   maxp_csr->csrh |= MUSB_CSRH_ISO;
 #if MUSB_CFG_SHARED_FIFO
   if (dir_in) {
@@ -876,7 +830,7 @@ bool dcd_edpt_iso_activate(uint8_t rhport, tusb_desc_endpoint_t const *ep_desc )
   musb->fifo_size[is_rx] = hwfifo_byte2size(mps) | MUSB_FIFOSZ_DOUBLE_PACKET;
 #endif
 
-  musb->intren_ep[is_rx ^ MUSB_INTR_EP_TX_RX_SWAP] |= TU_BIT(epn);
+  musb->intren_ep[is_rx] |= TU_BIT(epn);
 
   if (ie) musb_dcd_int_enable(rhport);
 
@@ -897,7 +851,7 @@ void dcd_edpt_close_all(uint8_t rhport)
       musb_ep_maxp_csr_t* maxp_csr = &ep_csr->maxp_csr[d];
       hwfifo_flush(musb, i, d, true);
       hwfifo_reset(musb, i, d);
-      maxp_csr->maxp = musb_mps_to_maxp(0);
+      maxp_csr->maxp = 0;
       maxp_csr->csrh = 0;
     }
   }
@@ -974,10 +928,6 @@ void dcd_edpt_stall(uint8_t rhport, uint8_t ep_addr) {
   } else {
     const tusb_dir_t ep_dir = tu_edpt_dir(ep_addr);
     const uint8_t is_rx = (ep_dir == TUSB_DIR_OUT ? 1u : 0u);
-    // A halt aborts the transfer: flush staged FIFO packet(s) before stalling, else leftover TX data
-    // concatenates with the next transfer after un-halt -> host sees an oversized packet (babble).
-    // FLUSH must precede SEND_STALL, whose write clears the RXRDY hwfifo_flush() gates on for OUT.
-    hwfifo_flush(musb_regs, epn, is_rx, false);
     ep_csr->maxp_csr[is_rx].csrl = MUSB_CSRL_SEND_STALL(is_rx);
     pipe_state_t* pipe = pipe_get(epn, ep_dir);
     pipe->armed = false;

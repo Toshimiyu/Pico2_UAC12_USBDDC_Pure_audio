@@ -35,7 +35,6 @@ set(EXAMPLE_LIST
   printer_to_cdc
   uac2_headset
   uac2_speaker_fb
-  usbtest
   usbtmc
   video_capture
   video_capture_2ch

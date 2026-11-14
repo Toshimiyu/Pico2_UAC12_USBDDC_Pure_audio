@@ -18,8 +18,7 @@ typedef enum
 	USB_AUDIO_IDLE = 0,		   // no stream (AS interface alt0 / not configured)
 	USB_AUDIO_BUFFERING,	   // stream open, nominal feedback only until the prefill level is reached
 	USB_AUDIO_STREAMING,	   // normal operation, PI feedback active
-	USB_AUDIO_OVERFLOW_FATAL,  // ring buffer too full : new USB data is discarded, playback continues
-	USB_AUDIO_UNDERFLOW_FATAL, // Ring + DMA pool too empty : accumulate again
+	USB_AUDIO_OVERFLOW_FATAL,  // ring buffer too full: pause input until it drains
 	USB_AUDIO_SWITCHING,	   // sample-rate change: USB data discarded, Ring + DMA pool are played out, then clock switch -> BUFFERING
 } usb_audio_state_t;
 

@@ -101,7 +101,7 @@
 #define TARGET_PREFILL_MS 6
 
 // Legacy start threshold for draining queued audio in non-buffering states.
-// Normal playback starts only after TARGET_PREFILL_MS has accumulated.
+// Normal playback starts after the greater of TARGET_PREFILL_MS and the feedback target has accumulated.
 #ifndef USB_AUDIO_PREFILL_FRAMES
 #define USB_AUDIO_PREFILL_FRAMES (1536)
 #endif
@@ -112,11 +112,6 @@
 
 // DMA transfer buffer size (at least 3 is needed).
 #define DEPTH_DMA_TX_BUFFER (4)
-
-// Start the DMA with a single queued block when nothing else is coming (Ring empty).
-// Before, output only started with >= 2 armed blocks, so the lone last block of a stream (or of a drain)
-// was never played.
-#define DMA_START_TAIL_BLOCK (1)
 
 // Feedback target level (50%) threshold. LCD drawing is allowed only at or above this level.
 #define SIZE_BUFFER_FB_THRESHOLD (SIZE_AUDIO_RING_FRAMES / 2)

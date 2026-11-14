@@ -9,18 +9,20 @@
 #include "transmit_to_dac.h"
 #include "usb_device_control.h"
 #include "hardware/dma.h"
+#include "hardware/irq.h"
 #include "hardware/pwm.h"
 #include "hardware/regs/dma.h"
 #include "hardware/regs/pio.h"
 #include "i2s_pio_interface.h"
+#include "i2s_rate.h"
 
 static const PIO pio = pio0;
 static const uint sm = 0;
 static pio_sm_config sm_config;
 static uint offset;
 
-#define DMA_TX_CHAIN_CHANNELS (2)
 #define DMA_TX_SRAM_BANK_BYTES (64u * 1024u)
+#define DMA_SILENCE_FRAMES (64u)
 
 static uint32_t __attribute__((section(".dma_sram_bank7")))
     dma_tx_buffers[DEPTH_DMA_TX_BUFFER][SIZE_DMA_TX_BUF];
@@ -28,16 +30,10 @@ static uint32_t __attribute__((section(".dma_sram_bank7")))
 _Static_assert(sizeof(dma_tx_buffers) <= DMA_TX_SRAM_BANK_BYTES,
                "DMA buffers exceed SRAM bank 7");
 
-typedef enum
-{
-    DMA_CH_STATE_IDLE = 0,
-    DMA_CH_STATE_ARMED,
-    DMA_CH_STATE_RUNNING
-} dma_ch_state_t;
-
-static volatile int dma_ch[DMA_TX_CHAIN_CHANNELS];
-static dma_channel_config c_dma[DMA_TX_CHAIN_CHANNELS];
-static volatile uint8_t dma_ch_state[DMA_TX_CHAIN_CHANNELS];
+static int dma_ch;
+static volatile bool dma_running;
+static volatile bool dma_running_pcm;
+static const uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u] = {0};
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -55,30 +51,15 @@ static void dma_tx_reset(void)
 
 volatile bool enable_output = false;
 
-// Blocks in use are the last dma_tx.using blocks written (oldest first). The oldest one may be partly
-// played already, so this is an upper bound. Read from Core0 without locking: approximate by design.
-uint32_t dma_tx_pool_frames(void)
+float i2s_actual_sample_rate(void)
 {
-    uint32_t n = dma_tx.using;
-    if (n > DEPTH_DMA_TX_BUFFER)
-        n = DEPTH_DMA_TX_BUFFER;
-    uint32_t idx = (dma_tx.wp + DEPTH_DMA_TX_BUFFER - n) % DEPTH_DMA_TX_BUFFER;
-    uint32_t frames = 0;
-    for (uint32_t i = 0; i < n; i++)
-    {
-        frames += dma_tx.data[idx].tx_size / 2u;
-        idx = (idx + 1u) % DEPTH_DMA_TX_BUFFER;
-    }
-    return frames;
+    return i2s_rate_from_clkdiv(clock_get_hz(clk_sys), pio->sm[sm].clkdiv);
 }
 
 // PWM
 static uint16_t pwm_slice;
 
 void __not_in_flash_func(dma_tx_start)(void);
-static inline uint32_t dma_tx_active_count(void);
-static inline bool dma_tx_any_running(void);
-static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused);
 static bool prefill_waiting_for_pio = false;
 
 bool calc_pwm_clkdiv_and_wrap_us(float target_period_us, uint16_t *wrap_out, float *clkdiv_out);
@@ -87,109 +68,47 @@ void set_period_pwm_us(float period_us);
 void pwm_i2s_streaming_rate_change(void);
 void __not_in_flash_func(pwm_wrap_handler)(void);
 
-static inline uint32_t dma_tx_active_count(void)
+static void __not_in_flash_func(dma_tx_schedule)(void)
 {
-    uint32_t count = 0;
-    for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
+    if (dma_running)
+        return;
+
+    const uint32_t *buffer;
+    uint32_t words;
+    if (dma_tx.using != 0)
     {
-        if (dma_ch_state[i] != DMA_CH_STATE_IDLE)
-            count++;
+        const uint32_t rp = dma_tx.rp;
+        buffer = dma_tx.data[rp].tx_buf;
+        words = dma_tx.data[rp].tx_size;
+        dma_tx.rp = (rp + 1u) % DEPTH_DMA_TX_BUFFER;
+        dma_running_pcm = true;
     }
-    return count;
+    else
+    {
+        const usb_audio_state_t state = usb_audio_get_state();
+        if (!enable_output || (state != USB_AUDIO_STREAMING && state != USB_AUDIO_OVERFLOW_FATAL))
+            return;
+        buffer = dma_silence;
+        words = DMA_SILENCE_FRAMES * 2u;
+        dma_running_pcm = false;
+    }
+
+    dma_running = true;
+    dma_channel_set_read_addr(dma_ch, buffer, false);
+    dma_channel_set_trans_count(dma_ch, words, true);
 }
 
-static inline bool dma_tx_any_running(void)
+static void __not_in_flash_func(dma_tx_irq_handler)(void)
 {
-    for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-    {
-        if (dma_ch_state[i] == DMA_CH_STATE_RUNNING)
-            return true;
-    }
-    return false;
-}
-
-static void __not_in_flash_func(dma_tx_chain_service)(bool ring_paused)
-{
-    for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-    {
-        bool busy = dma_channel_is_busy(dma_ch[i]);
-        if (dma_ch_state[i] == DMA_CH_STATE_ARMED)
-        {
-            if (busy)
-                dma_ch_state[i] = DMA_CH_STATE_RUNNING;
-        }
-        else if (dma_ch_state[i] == DMA_CH_STATE_RUNNING)
-        {
-            if (!busy)
-            {
-                dma_ch_state[i] = DMA_CH_STATE_IDLE;
-                if (dma_tx.using > 0)
-                    dma_tx.using--;
-            }
-        }
-    }
-
-    uint32_t active = dma_tx_active_count();
-    int32_t unassigned = (int32_t)dma_tx.using - (int32_t)active;
-    if (unassigned < 0)
-        unassigned = 0;
-
-    while (unassigned > 0)
-    {
-        int idle_idx = -1;
-        for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-        {
-            if (dma_ch_state[i] == DMA_CH_STATE_IDLE)
-            {
-                idle_idx = i;
-                break;
-            }
-        }
-        if (idle_idx < 0)
-            break;
-
-        uint32_t rp = dma_tx.rp;
-        dma_channel_set_read_addr(dma_ch[idle_idx], dma_tx.data[rp].tx_buf, false);
-        dma_channel_set_trans_count(dma_ch[idle_idx], dma_tx.data[rp].tx_size, false);
-        dma_tx.rp++;
-        if (dma_tx.rp >= DEPTH_DMA_TX_BUFFER)
-            dma_tx.rp = 0;
-        dma_ch_state[idle_idx] = DMA_CH_STATE_ARMED;
-        active++;
-        unassigned--;
-    }
-
-    if (!dma_tx_any_running())
-    {
-        int armed_count = 0;
-        int start_idx = -1;
-        for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-        {
-            if (dma_ch_state[i] == DMA_CH_STATE_ARMED)
-            {
-                armed_count++;
-                if (start_idx < 0)
-                    start_idx = i;
-            }
-        }
-        bool start = (armed_count >= 2) && (start_idx >= 0);
-
-        // A paused or empty Ring cannot supply another block; drain the lone queued block.
-        const bool tail = (armed_count == 1) && (start_idx >= 0) &&
-                          (ring_paused || get_size_using(&buffer_audio) == 0);
-        if (tail)
-        {
-#if DMA_START_TAIL_BLOCK
-            start = true;
-#endif
-        }
-
-        if (start)
-        {
-            dma_channel_start(dma_ch[start_idx]);
-            dma_ch_state[start_idx] = DMA_CH_STATE_RUNNING;
-        }
-    }
+    if (!dma_channel_get_irq0_status(dma_ch))
+        return;
+    dma_channel_acknowledge_irq0(dma_ch);
+    if (!dma_running)
+        return;
+    if (dma_running_pcm)
+        dma_tx.using--;
+    dma_running = false;
+    dma_tx_schedule();
 }
 
 void reset_i2s_freq(void)
@@ -225,30 +144,20 @@ void init_i2s_interface(void)
 
     reset_i2s_freq();
 
-    // DMA setup (chained, no IRQ)
-    dma_ch[0] = dma_claim_unused_channel(true);
-    dma_ch[1] = dma_claim_unused_channel(true);
-
-    c_dma[0] = dma_channel_get_default_config(dma_ch[0]);
-    channel_config_set_transfer_data_size(&c_dma[0], DMA_SIZE_32);
-    channel_config_set_dreq(&c_dma[0], pio_get_dreq(pio, sm, true));
-    channel_config_set_chain_to(&c_dma[0], dma_ch[1]);
-
-    c_dma[1] = dma_channel_get_default_config(dma_ch[1]);
-    channel_config_set_transfer_data_size(&c_dma[1], DMA_SIZE_32);
-    channel_config_set_dreq(&c_dma[1], pio_get_dreq(pio, sm, true));
-    channel_config_set_chain_to(&c_dma[1], dma_ch[0]);
+    // Software-trigger each transfer so a delayed IRQ cannot restart stale data.
+    dma_ch = dma_claim_unused_channel(true);
+    dma_channel_config config = dma_channel_get_default_config(dma_ch);
+    channel_config_set_transfer_data_size(&config, DMA_SIZE_32);
+    channel_config_set_dreq(&config, pio_get_dreq(pio, sm, true));
 
     dma_tx_reset();
-    memset((void *)dma_ch_state, 0, sizeof(dma_ch_state));
-
-    dma_channel_set_irq0_enabled(dma_ch[0], false);
-    dma_channel_set_irq0_enabled(dma_ch[1], false);
-
-    dma_channel_configure(dma_ch[0], &c_dma[0],
+    dma_running = false;
+    dma_running_pcm = false;
+    dma_channel_configure(dma_ch, &config,
                           &pio->txf[sm], dma_tx.data[0].tx_buf, 0, false);
-    dma_channel_configure(dma_ch[1], &c_dma[1],
-                          &pio->txf[sm], dma_tx.data[0].tx_buf, 0, false);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_tx_irq_handler);
+    dma_channel_set_irq0_enabled(dma_ch, true);
+    irq_set_enabled(DMA_IRQ_0, true);
 }
 
 // Notify the I2S transmit timing.
@@ -266,12 +175,11 @@ extern volatile absolute_time_t time_start_output;
 void __not_in_flash_func(dma_tx_start)(void)
 {
     const usb_audio_state_t state = usb_audio_get_state();
-    const bool ring_paused = state == USB_AUDIO_BUFFERING || state == USB_AUDIO_UNDERFLOW_FATAL;
+    const bool ring_paused = state == USB_AUDIO_BUFFERING;
     if (ring_paused)
     {
         if (enable_output)
         {
-            dma_tx_chain_service(true);
             if (dma_tx.using != 0)
                 prefill_waiting_for_pio = false;
             else if (!prefill_waiting_for_pio)
@@ -285,13 +193,26 @@ void __not_in_flash_func(dma_tx_start)(void)
         }
         return;
     }
+    int32_t level = (int32_t)get_size_using(&buffer_audio) / 2;
+    if (enable_output && (state == USB_AUDIO_IDLE || state == USB_AUDIO_SWITCHING) &&
+        level == 0 && dma_tx.using == 0)
+    {
+        if (!prefill_waiting_for_pio)
+        {
+            pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+            prefill_waiting_for_pio = true;
+        }
+        else if ((pio->fdebug & (1u << (PIO_FDEBUG_TXSTALL_LSB + sm))) != 0u)
+            dma_stop_and_clear();
+        return;
+    }
     prefill_waiting_for_pio = false;
 
-    int32_t level = (int32_t)get_size_using(&buffer_audio) / 2;
     if ((state == USB_AUDIO_STREAMING && level > 0) ||
         (state != USB_AUDIO_STREAMING && level >= SIZE_AUDIO_PREFILL_FRAMES))
         enable_output = true;
-    else if (level == 0 && dma_tx.using == 0)
+    else if (state != USB_AUDIO_STREAMING && state != USB_AUDIO_OVERFLOW_FATAL &&
+             level == 0 && dma_tx.using == 0)
     {
         enable_output = false;
     }
@@ -317,7 +238,7 @@ void __not_in_flash_func(dma_tx_start)(void)
     while (dma_tx.using < SIZE_DMA_TX_BUF_STACK)
     {
         const usb_audio_state_t fetch_state = usb_audio_get_state();
-        if (fetch_state == USB_AUDIO_BUFFERING || fetch_state == USB_AUDIO_UNDERFLOW_FATAL)
+        if (fetch_state == USB_AUDIO_BUFFERING)
             break;
 
         int32_t frames = (int32_t)get_size_using(&buffer_audio) / 2;
@@ -338,17 +259,19 @@ void __not_in_flash_func(dma_tx_start)(void)
         restore_interrupts(irq_state);
     }
 
-    dma_tx_chain_service(false);
+    const uint32_t irq_state = save_and_disable_interrupts();
+    dma_tx_schedule();
+    restore_interrupts(irq_state);
 }
 
 void dma_stop_and_clear(void)
 {
-    // Force-stop DMA.
-    for (int i = 0; i < DMA_TX_CHAIN_CHANNELS; i++)
-        dma_channel_abort(dma_ch[i]);
-
-    // Reset the DMA status.
-    dma_hw->ints0 = (1u << dma_ch[0]) | (1u << dma_ch[1]);
+    const uint32_t irq_state = save_and_disable_interrupts();
+    dma_channel_set_irq0_enabled(dma_ch, false);
+    // RP2350-E5: disable the channel before aborting it.
+    hw_clear_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
+    dma_channel_abort(dma_ch);
+    dma_hw->intr = 1u << dma_ch;
 
     // Clear the FIFO buffer.
     pio_sm_clear_fifos(pio0, 0);
@@ -356,11 +279,15 @@ void dma_stop_and_clear(void)
 
     // Reset queue metadata without clearing the DMA buffer pointers.
     dma_tx_reset();
-    memset((void *)dma_ch_state, 0, sizeof(dma_ch_state));
+    dma_running = false;
+    dma_running_pcm = false;
 
     // A clock/rate change starts a fresh playback epoch. Require the normal
     // buffer threshold and I2S phase resynchronization before output resumes.
     enable_output = false;
     enable_output_prev = false;
     prefill_waiting_for_pio = false;
+    hw_set_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
+    dma_channel_set_irq0_enabled(dma_ch, true);
+    restore_interrupts(irq_state);
 }
