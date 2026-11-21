@@ -47,18 +47,17 @@ volatile bool audio_data_seen = false;
 #define LEVEL_OVERFLOW_RECOVER (FB_TARGET_LEVEL + SIZE_AUDIO_RING_FRAMES / 8) // OVERFLOW_FATAL -> BUFFERING
 
 // PI controller (units: Hz of requested sample rate per input sample of level error)
-#define FB_KP (0.50f)			   // proportional [Hz / sample]
-#define FB_KI (0.0625f)			   // integral     [Hz / (sample * s)]  -> zeta ~= 1, wn ~= 0.25 rad/s
+#define FB_KP_PPM_PER_FRAME (0.47f)
 #define FB_LEVEL_TAU_S (0.064f)	   // level low-pass time constant (removes block-size sawtooth)
 #define FB_UPDATE_PERIOD_US (1000) // one update per USB frame
-#define FB_BASE_LIMIT_PPM  (50.0f)
+#define FB_BASE_LIMIT_PPM  (100.0f)
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
-#define FB_BOOST_MAX_PPM   (100.0f)
+#define FB_BOOST_MAX_PPM   (1000.0f)
 
 // Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
-// Worst case drain = (Ring 2048 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 69 ms.
-#define SWITCH_DRAIN_TIMEOUT_US (100000u)
+// Worst case drain = (Ring 4096 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 115 ms.
+#define SWITCH_DRAIN_TIMEOUT_US (150000u)
 
 //--------------------------------------------------------------------+
 // Module state
@@ -115,7 +114,7 @@ static void set_state(usb_audio_state_t s)
 
 static void fb_reset(void)
 {
-	fb.level_f = (float)audio_ring_total_frames();
+	fb.level_f = (float)FB_TARGET_LEVEL;
 	fb.integ_hz = 0.0f;
 	fb.last_us = time_us_32();
 	fb.force_send = true;
@@ -515,7 +514,7 @@ fb.last_us = now;
 float dt = (float)dt_us * 1e-6f;
 if (dt > 0.02f)
     dt = 0.02f;
-// 【ここから追加】過渡期カウンタの減衰処理とゲインのスケール
+// 過渡期カウンタの減衰処理とゲインのスケール
     float transient_scale = 1.0f;
     if (fb.transient_counter_us > 0)
     {
@@ -529,9 +528,9 @@ if (dt > 0.02f)
         transient_scale = 0.25f + 0.75f * progress;
     }
 
-    float effective_ki = FB_KI * transient_scale;
-    float effective_kp = FB_KP * transient_scale;
 const uint32_t fs = audio_state.freq;
+const float effective_kp = (float)fs * FB_KP_PPM_PER_FRAME * 1e-6f * transient_scale;
+const float effective_ki = effective_kp * effective_kp * 0.25f * transient_scale;
 const float level = (float)audio_ring_total_frames();
 
 // Low-pass the level so that block-wise Core0 / DMA access does not leak into the feedback
@@ -542,9 +541,8 @@ float adj_hz = 0.0f;
 if (st == USB_AUDIO_BUFFERING)
 {
     fb.integ_hz = 0.0f;
-	// BUFFERING中はバッファを早く溜めるため、強制的に定常レートより +0.025% 高い要求を送る
-    // 例: 192000Hz なら +0.00025f (+0.025%)250 ppm
-    adj_hz = (float)fs * 0.00030f;
+	// BUFFERING中はバッファを早く溜めるため、強制的に公称レートの500ppmを加算
+    adj_hz = (float)fs * 0.00050f;
 }
 else
 {
@@ -576,7 +574,8 @@ if (lim > (float)FB_ADJ_LIMIT)
 
 float p = effective_kp * err;
 
-float integ_next = fb.integ_hz + effective_ki * err * dt; // 【変更】FB_KI から effective_ki に変更
+const float integ_increment = effective_ki * err * dt;
+float integ_next = fb.integ_hz + integ_increment;
 
 float integ_lim =
     (float)fs * FB_BASE_LIMIT_PPM * 1e-6f;
@@ -586,8 +585,7 @@ if (integ_lim > (float)FB_ADJ_LIMIT)
 
 if (integ_next > integ_lim)
     integ_next = integ_lim;
-
-if (integ_next < -integ_lim)
+else if (integ_next < -integ_lim)
     integ_next = -integ_lim;
 
 adj_hz = p + integ_next;
@@ -601,7 +599,11 @@ else if (adj_hz < -lim)
     adj_hz = -lim;
 }
 
-fb.integ_hz = integ_next;
+if (!((adj_hz >= lim && integ_increment > 0.0f) ||
+      (adj_hz <= -lim && integ_increment < 0.0f)))
+{
+    fb.integ_hz = integ_next;
+}
 
 }
 
@@ -636,6 +638,18 @@ void usb_sound_card_init(void)
 void usb_audio_task(void)
 {
     tud_task();
+    if (dma_tx_fault_pending())
+    {
+        multicore_lockout_start_blocking();
+        (void)dma_tx_recover_fault();
+        if (audio_state_machine == USB_AUDIO_STREAMING ||
+            audio_state_machine == USB_AUDIO_OVERFLOW_FATAL)
+        {
+            set_state(USB_AUDIO_BUFFERING);
+            fb_reset();
+        }
+        multicore_lockout_end_blocking();
+    }
     service_switch();
     service_rx();
     service_state();

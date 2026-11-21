@@ -50,7 +50,7 @@ bool usb_audio_class_get_format(uint8_t alt, usb_audio_format_t *format)
 
 static const uint8_t desc_uac2_configuration[] =
 {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_AUDIO_INTERFACES, 0, CONFIG_UAC2_TOTAL_LEN, 0x00, 100),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_AUDIO_INTERFACES, 0, CONFIG_UAC2_TOTAL_LEN, 0x00, 150),
     TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESCRIPTOR(
         ITF_NUM_AUDIO_CONTROL, 0, UAC2_EPNUM_AUDIO_OUT,
         UAC2_EPNUM_AUDIO_FB | 0x80, UAC2_FB_EP_SIZE),

@@ -15,6 +15,9 @@
 #include "hardware/regs/pio.h"
 #include "i2s_pio_interface.h"
 #include "i2s_rate.h"
+#include <stdatomic.h>
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic integers");
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic booleans");
 
 static const PIO pio = pio0;
 static const uint sm = 0;
@@ -33,6 +36,8 @@ _Static_assert(sizeof(dma_tx_buffers) <= DMA_TX_SRAM_BANK_BYTES,
 static int dma_ch;
 static volatile bool dma_running;
 static volatile bool dma_running_pcm;
+static atomic_uint dma_ahb_fault;
+static atomic_bool dma_fault_quiescent;
 static const uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u] = {0};
 DMA_TX_STRUCTURE dma_tx;
 
@@ -68,9 +73,26 @@ void set_period_pwm_us(float period_us);
 void pwm_i2s_streaming_rate_change(void);
 void __not_in_flash_func(pwm_wrap_handler)(void);
 
+static bool __not_in_flash_func(dma_tx_check_ahb_errors)(void)
+{
+    const uint32_t error = dma_hw->ch[dma_ch].ctrl_trig &
+        (DMA_CH0_CTRL_TRIG_READ_ERROR_BITS | DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS);
+    if (error != 0u)
+    {
+        dma_channel_set_irq0_enabled((uint)dma_ch, false);
+        atomic_store_explicit(&dma_ahb_fault, error, memory_order_release);
+    }
+    return error != 0u;
+}
+
+bool dma_tx_fault_pending(void)
+{
+    return atomic_load_explicit(&dma_fault_quiescent, memory_order_acquire);
+}
+
 static void __not_in_flash_func(dma_tx_schedule)(void)
 {
-    if (dma_running)
+    if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
     const uint32_t *buffer;
@@ -103,6 +125,8 @@ static void __not_in_flash_func(dma_tx_irq_handler)(void)
     if (!dma_channel_get_irq0_status(dma_ch))
         return;
     dma_channel_acknowledge_irq0(dma_ch);
+    if (dma_tx_check_ahb_errors())
+        return;
     if (!dma_running)
         return;
     if (dma_running_pcm)
@@ -153,6 +177,8 @@ void init_i2s_interface(void)
     dma_tx_reset();
     dma_running = false;
     dma_running_pcm = false;
+    atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_relaxed);
+    atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
     dma_channel_configure(dma_ch, &config,
                           &pio->txf[sm], dma_tx.data[0].tx_buf, 0, false);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_tx_irq_handler);
@@ -174,6 +200,11 @@ extern volatile absolute_time_t time_start_output;
 
 void __not_in_flash_func(dma_tx_start)(void)
 {
+    if (atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
+    {
+        atomic_store_explicit(&dma_fault_quiescent, true, memory_order_release);
+        return;
+    }
     const usb_audio_state_t state = usb_audio_get_state();
     const bool ring_paused = state == USB_AUDIO_BUFFERING;
     if (ring_paused)
@@ -272,6 +303,9 @@ void dma_stop_and_clear(void)
     hw_clear_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
     dma_channel_abort(dma_ch);
     dma_hw->intr = 1u << dma_ch;
+    const uint32_t ctrl = dma_hw->ch[dma_ch].al1_ctrl;
+    dma_hw->ch[dma_ch].al1_ctrl = ctrl |
+        DMA_CH0_CTRL_TRIG_READ_ERROR_BITS | DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS;
 
     // Clear the FIFO buffer.
     pio_sm_clear_fifos(pio0, 0);
@@ -290,4 +324,14 @@ void dma_stop_and_clear(void)
     hw_set_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
     dma_channel_set_irq0_enabled(dma_ch, true);
     restore_interrupts(irq_state);
+}
+
+uint8_t dma_tx_recover_fault(void)
+{
+    const uint32_t error = atomic_load_explicit(&dma_ahb_fault, memory_order_acquire);
+    dma_stop_and_clear();
+    atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
+    atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_release);
+    return (uint8_t)(((error & DMA_CH0_CTRL_TRIG_READ_ERROR_BITS) ? 1u : 0u) |
+                     ((error & DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS) ? 2u : 0u));
 }

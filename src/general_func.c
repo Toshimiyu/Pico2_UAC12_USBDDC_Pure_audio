@@ -13,36 +13,47 @@
 
 static void renew_cpu_clock(void)
 {
-	// CPU clock is kept at the high-performance voltage for the selected rate family.
+	uint32_t target_khz;
 	switch (audio_state.freq)
 	{
+	case 176400:
+		target_khz = SYS_CLOCK_KHZ_176K4;
+		break;
+	case 88200:
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
+		break;
 	case 192000:
 	case 96000:
 	case 48000:
-		vreg_set_voltage(V_CORE_HI);
-		busy_wait_us(100);
-		set_sys_clock_khz(SYS_CLOCK_KHZ_48K, true);
-		busy_wait_us(50);
+		target_khz = SYS_CLOCK_KHZ_48K;
 		break;
-	case 176400:
-	case 88200:
 	case 44100:
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
+		break;
 	default:
-		vreg_set_voltage(V_CORE_HI);
-		busy_wait_us(100);
-		set_sys_clock_khz(SYS_CLOCK_KHZ_44K, true);
-		busy_wait_us(50);
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
 		break;
 	}
+
+	if (clock_get_hz(clk_sys) == target_khz * 1000u)
+		return;
+
+	vreg_set_voltage(V_CORE_HI);
+	busy_wait_us(100);
+	set_sys_clock_khz(target_khz, true);
+	busy_wait_us(50);
 }
 
 void renew_clock(void)
 {
-	// Reconfigure the CPU clock.
-	renew_cpu_clock();
-
 	// Clear DMA.
 	dma_stop_and_clear();
+
+	// Stop PIO before changing its source clock.
+	stop_i2s();
+
+	// Reconfigure the CPU clock.
+	renew_cpu_clock();
 
 	// Reconfigure the PIO clock divider.
 	reset_i2s_freq();

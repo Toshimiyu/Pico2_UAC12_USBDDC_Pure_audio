@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
-**Current version: v2.0**
+**Current version: v2.3**
 
 ## Description
 
@@ -58,11 +58,41 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ## Change History
 
+### V2.3
+
+- Switched to a 330 MHz system clock for 44.1/88.2 kHz playback and 307.2 MHz for 176.4 kHz playback to reduce PIO clock-divider quantization error
+- Uses the same I²S output clock independently of the USB input bit depth
+- Stops PIO before changing the clock during sample-rate switches; DMA AHB errors are recovered instead of being treated as normal completion
+- Stops startup if audio-ring allocation fails and synchronizes shared ring state reads and clears with a spin lock
+- Fixed UAC1 feedback endpoint `bRefresh` and the inverted-I²S PIO configuration
+- Jitter measurements, DMA-AHB recovery validation, and sample-rate-switch validation remain to be completed on hardware
+
+### V2.2
+
+- Changed the feedback target to 50% of ring capacity (2048 frames)
+- Enabled water-level initialization, conditional integration, rate-proportional gains, and clock-offset carry-over between streams
+- Changed UAC1/UAC2 Output Terminals from `0x0602` (Digital Audio Interface) to `0x0301` (Speaker)
+- Changed UAC1 `bcdDevice` to `0x0303` and UAC2 `bcdDevice` to `0x0313`
+- Verified UAC1 recognition with Android standard drivers, Onkyo HF Player, and its proprietary driver
+
+### V2.1
+
+- Changed UAC1 `bcdDevice` to `0x0303` and UAC2 `bcdDevice` to `0x0313`
+- Added support for UAC1 volume `SET_RES` requests
+
 ### V2.0
 
 - Updated the firmware version to v2.0
 - Removed the diagnostic screen, GPIO debug functions, and USB CDC diagnostic logging, keeping the features needed for USB audio playback
 - Retained the shared UAC1/UAC2 audio core and playback display
+- Expanded the audio ring to 4096 stereo frames
+- Set the base feedback correction limit to 100 ppm and the low-water maximum to 1000 ppm, with an additional 500 ppm of the nominal rate while buffering
+- Changed sample-rate-switch drain timeout to 150 ms
+- Skips voltage and PLL reconfiguration when the system clock is unchanged, updating only the I²S divider
+- Sets UAC1/UAC2 configuration descriptor maximum current to 150 mA
+- Changed DMA transfers to completion-IRQ driven operation and fills 64-frame silence when PCM is insufficient
+- Changed the feedback baseline from the nominal sample rate to the actual PIO-divider output rate
+- When the USB receive FIFO exceeds 75%, removes oldest frames instead of clearing the entire FIFO, bringing it near 50%
 
 ---
 

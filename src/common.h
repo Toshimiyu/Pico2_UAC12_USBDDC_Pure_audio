@@ -70,8 +70,9 @@
 // User Configurable end ------------------------------------------------------------
 
 // System Clock
-#define SYS_CLOCK_KHZ_44K (336000)
+#define SYS_CLOCK_KHZ_44K1_88K2 (330000)
 #define SYS_CLOCK_KHZ_48K (360000)
+#define SYS_CLOCK_KHZ_176K4 (307200)
 
 // Core Voltage
 #define V_CORE_HI VREG_VOLTAGE_1_25
@@ -95,9 +96,9 @@
 // Endpoint buffer size (at least 97 is needed for (96+1) kHz * 1 ms).
 #define SIZE_EP_BUFFER (896)
 
-// Audio ring capacity in stereo frames. 2048 frames provides about 10.7 ms of
+// Audio ring capacity in stereo frames. 4096 frames provides about 21.3 ms of
 // buffering at 192 kHz; the feedback target follows at 50% capacity.
-#define SIZE_AUDIO_RING_FRAMES (2048)
+#define SIZE_AUDIO_RING_FRAMES (4096)
 #define TARGET_PREFILL_MS 6
 
 // Legacy start threshold for draining queued audio in non-buffering states.

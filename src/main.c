@@ -151,7 +151,7 @@ int main(void)
 	// Increase the operating voltage and clock speed.
 	vreg_set_voltage(V_CORE_HI);
 	sleep_ms(2);
-	set_sys_clock_khz(SYS_CLOCK_KHZ_44K, true);
+	set_sys_clock_khz(SYS_CLOCK_KHZ_44K1_88K2, true);
 	sleep_us(1);
 
 	// Enable the test mode pins.
@@ -164,7 +164,12 @@ int main(void)
 	}
 
 	// Initialize buffers.
-	initialize_ringbuffer(SIZE_AUDIO_RING_FRAMES * 2u, false, &buffer_audio);
+	if (initialize_ringbuffer(SIZE_AUDIO_RING_FRAMES * 2u, false, &buffer_audio) != 0)
+	{
+		printf("Audio ring buffer allocation failed\n");
+		while (true)
+			__wfi();
+	}
 
 	// Initialize audio status.
 	audio_state.freq = AUDIO_INITIAL_FREQ;
