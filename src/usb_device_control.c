@@ -22,7 +22,6 @@
 #include "usb_audio_class.h"
 #include "common_types.h"
 #include "common.h"
-#include "mute_ramp.h"
 #include "ringbuffer.h"
 #include "display_rta.h"
 #include "transmit_to_dac.h"
@@ -32,6 +31,8 @@ extern uint32_t now_playing;
 // Referenced from main.c / display_rta.c (activity monitor)
 volatile uint32_t audio_last_data_us = 0;
 volatile bool audio_data_seen = false;
+volatile uint32_t usb_audio_fifo_dropped_frames = 0;
+volatile uint32_t usb_audio_ring_write_failures = 0;
 
 //--------------------------------------------------------------------+
 // Tunables
@@ -66,7 +67,15 @@ static volatile usb_audio_state_t audio_state_machine = USB_AUDIO_IDLE;
 static volatile uint8_t cur_alt = 0;
 static volatile uint8_t bytes_per_sample = 2;
 static volatile bool rate_unsupported = false;
-static mute_ramp_t usb_mute_ramp;
+typedef struct
+{
+	float current;
+	float target;
+	float step;
+	uint32_t remaining;
+	uint32_t frames;
+} audio_gain_ramp_t;
+static audio_gain_ramp_t usb_gain_ramp;
 
 typedef struct
 {
@@ -125,8 +134,24 @@ static void service_rx(void);
 
 static void clear_audio_buffers(void)
 {
-	mute_ramp_reset(&usb_mute_ramp, audio_state.freq, audio_state.mute);
+	const float target = audio_state.mute ? 0.0f : audio_state.vol_float * DEFAULT_GAIN_RATIO;
+	usb_gain_ramp.current = target;
+	usb_gain_ramp.target = target;
+	usb_gain_ramp.step = 0.0f;
+	usb_gain_ramp.remaining = 0;
+	usb_gain_ramp.frames = (uint32_t)(((uint64_t)audio_state.freq * 5u + 999u) / 1000u);
+	if (usb_gain_ramp.frames == 0u)
+		usb_gain_ramp.frames = 1u;
 	clear_ringbuffer(&buffer_audio);
+}
+
+static void audio_gain_ramp_set_target(float target)
+{
+	if (target == usb_gain_ramp.target)
+		return;
+	usb_gain_ramp.target = target;
+	usb_gain_ramp.remaining = usb_gain_ramp.frames;
+	usb_gain_ramp.step = (target - usb_gain_ramp.current) / (float)usb_gain_ramp.remaining;
 }
 
 static void flush_audio_fifo(void)
@@ -261,6 +286,31 @@ void usb_audio_stream_close(void)
 	flush_audio_fifo(); // FIFO tail the host sent just before alt 0
 }
 
+void usb_audio_suspend(void)
+{
+	cur_alt = 0;
+	rate_unsupported = false;
+	multicore_lockout_start_blocking();
+	set_state(USB_AUDIO_IDLE);
+	clear_audio_buffers();
+	flush_audio_fifo();
+	dma_stop_and_clear();
+	stop_i2s();
+	fb_reset();
+	multicore_lockout_end_blocking();
+}
+
+void usb_audio_restart_buffering(void)
+{
+	if (cur_alt != 0 && !rate_unsupported &&
+		(audio_state_machine == USB_AUDIO_STREAMING ||
+		 audio_state_machine == USB_AUDIO_OVERFLOW_FATAL))
+	{
+		set_state(USB_AUDIO_BUFFERING);
+		fb_reset();
+	}
+}
+
 //--------------------------------------------------------------------+
 // PCM receive: TinyUSB FIFO -> 32-bit I2S samples -> audio ring buffer
 //--------------------------------------------------------------------+
@@ -372,6 +422,7 @@ static void service_rx(void)
 	{
 		const uint16_t retain = (uint16_t)((fifo_depth / 2u / frame_bytes) * frame_bytes);
 		uint32_t discard = avail - retain;
+		usb_audio_fifo_dropped_frames += discard / frame_bytes;
 		while (discard != 0)
 		{
 			uint16_t n = (uint16_t)(discard > sizeof(rx_raw) ? sizeof(rx_raw) : discard);
@@ -419,17 +470,19 @@ static void service_rx(void)
     		break;
 
 		pcm_to_float(rx_raw, frames, bps, ep_Lch, ep_Rch);
-		const float scale = audio_state.vol_float * DEFAULT_GAIN_RATIO;
-		const bool muted = audio_state.mute;
-		const mute_ramp_t ramp_before = usb_mute_ramp;
-		const float ramp_unit = 1.0f / (float)usb_mute_ramp.frames;
+		const float target_gain = audio_state.mute ? 0.0f : audio_state.vol_float * DEFAULT_GAIN_RATIO;
+		audio_gain_ramp_set_target(target_gain);
+		const audio_gain_ramp_t ramp_before = usb_gain_ramp;
 		for (uint32_t i = 0; i < frames; ++i)
 		{
-			const uint32_t position = mute_ramp_next(&usb_mute_ramp, muted);
-			const float sample_scale = position == usb_mute_ramp.frames ? scale :
-				(position == 0u ? 0.0f : scale * ((float)position * ramp_unit));
-			ep_Lch[i] *= sample_scale;
-			ep_Rch[i] *= sample_scale;
+			if (usb_gain_ramp.remaining != 0u)
+			{
+				usb_gain_ramp.current += usb_gain_ramp.step;
+				if (--usb_gain_ramp.remaining == 0u)
+					usb_gain_ramp.current = usb_gain_ramp.target;
+			}
+			ep_Lch[i] *= usb_gain_ramp.current;
+			ep_Rch[i] *= usb_gain_ramp.current;
 			pcm_stereo[2u * i] = (int32_t)ep_Lch[i];
 			pcm_stereo[2u * i + 1u] = (int32_t)ep_Rch[i];
 		}
@@ -438,7 +491,8 @@ static void service_rx(void)
 		spectrum_feed_block(ep_Lch, ep_Rch, frames);
 		if (ringbuf_write_array_spinlock(pcm_stereo, frames * 2u, &buffer_audio) < 0)
 		{
-			usb_mute_ramp = ramp_before;
+			usb_audio_ring_write_failures++;
+			usb_gain_ramp = ramp_before;
 			set_state(USB_AUDIO_OVERFLOW_FATAL);
 			break;
 		}
@@ -629,7 +683,7 @@ void usb_sound_card_init(void)
 
 	audio_state.acq_volume = DEFAULT_VOLUME;
 	volume_control();
-	mute_ramp_reset(&usb_mute_ramp, audio_state.freq, audio_state.mute);
+	clear_audio_buffers();
 
 	tusb_rhport_init_t dev_init = {.role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL};
 	tusb_init(BOARD_TUD_RHPORT, &dev_init);

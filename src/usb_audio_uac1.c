@@ -7,7 +7,6 @@
 #include "common.h"
 
 static const uint32_t uac1_sample_rates[] = {44100, 48000, 88200, 96000};
-static uint16_t uac1_volume_resolution = VOLUME_RESOLUTION;
 
 const uint32_t *usb_audio_class_sample_rates(uint8_t *count)
 {
@@ -121,7 +120,7 @@ static bool feature_unit_get_request(uint8_t rhport, tusb_control_request_t cons
         value = MAX_VOLUME;
         break;
     case AUDIO10_CS_REQ_GET_RES:
-        value = (int16_t)uac1_volume_resolution;
+        value = VOLUME_RESOLUTION;
         break;
     default:
         return false;
@@ -138,19 +137,6 @@ static bool feature_unit_set_request(tusb_control_request_t const *request, cons
 
     if (channel != 0)
         return false;
-
-    if (selector == AUDIO10_FU_CTRL_VOLUME
-        && request->bRequest == AUDIO10_CS_REQ_SET_RES
-        && request->wLength == 2)
-    {
-        const uint16_t resolution =
-            (uint16_t)buffer[0] | ((uint16_t)buffer[1] << 8);
-        if (resolution == 0u || (resolution & 0x8000u) != 0u)
-            return false;
-
-        uac1_volume_resolution = resolution;
-        return true;
-    }
 
     if (request->bRequest != AUDIO10_CS_REQ_SET_CUR)
         return false;
@@ -289,4 +275,10 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf,
 void tud_umount_cb(void)
 {
     usb_audio_stream_close();
+}
+
+void tud_suspend_cb(bool remote_wakeup_en)
+{
+    (void)remote_wakeup_en;
+    usb_audio_suspend();
 }

@@ -1,21 +1,3 @@
-.program I2S_16bit
-
-.side_set 2
-     out null, 16    side 0b01
-     out pins, 1     side 0b00
-     set x, 13       side 0b01
-L1:  out pins, 1     side 0b00
-     jmp x--, L1     side 0b01
-     out pins, 1     side 0b10
-     out null, 16    side 0b11
-     out pins, 1     side 0b10
-     set x, 13       side 0b11
-L2:  out pins, 1     side 0b10
-     jmp x--, L2     side 0b11
-     out pins, 1     side 0b00
-
-
-
 .program LJ_32bit
 
 .side_set 2

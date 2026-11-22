@@ -9,7 +9,6 @@
 
 #include "tusb.h"
 #include "usb_audio_config.h"
-#include "uac2_compat.h"
 #include "usb_audio_uac2.h"
 #include "common_types.h"
 #include "common.h"
@@ -94,17 +93,11 @@ static bool clock_get_request(uint8_t rhport, tusb_control_request_t const *requ
     const uint16_t range_size = (uint16_t)(sizeof(rangef.wNumSubRanges)
         + rate_count * sizeof(rangef.subrange[0]));
     return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &rangef, range_size);
-    } else if (request->bRequest == 4) { // UAC2 CS_REQ_INFO = 4
-      uint8_t info = 3; // GET and SET supported
-      return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &info, sizeof(info));
     }
   } else if (ctrl_sel == AUDIO20_CS_CTRL_CLK_VALID) {
     if (request->bRequest == AUDIO20_CS_REQ_CUR) {
       audio20_control_cur_1_t cur_valid = { .bCur = 1 };
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &cur_valid, sizeof(cur_valid));
-    } else if (request->bRequest == 4) {
-      uint8_t info = 1; // Read-only (GET supported)
-      return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &info, sizeof(info));
     }
   }
   return false;
@@ -142,23 +135,21 @@ static bool feature_unit_get_request(uint8_t rhport, tusb_control_request_t cons
     if (request->bRequest == AUDIO20_CS_REQ_CUR) {
       audio20_control_cur_1_t mute1 = { .bCur = audio_state.mute ? 1 : 0 };
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &mute1, sizeof(mute1));
-    } else if (request->bRequest == 4) {
-      uint8_t info = 3; // GET/SET supported
-      return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &info, sizeof(info));
     }
   } else if (ctrl_sel == AUDIO20_FU_CTRL_VOLUME) {
     if (request->bRequest == AUDIO20_CS_REQ_RANGE) {
       audio20_control_range_2_n_t(1) range_vol = {
         .wNumSubRanges = tu_htole16(1),
-        .subrange[0] = { .bMin = tu_htole16(MIN_VOLUME), tu_htole16(MAX_VOLUME), tu_htole16(VOLUME_RESOLUTION) }
+        .subrange[0] = {
+          .bMin = tu_htole16(MIN_VOLUME),
+          .bMax = tu_htole16(MAX_VOLUME),
+          .bRes = tu_htole16(VOLUME_RESOLUTION)
+        }
       };
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &range_vol, sizeof(range_vol));
     } else if (request->bRequest == AUDIO20_CS_REQ_CUR) {
       audio20_control_cur_2_t cur_vol = { .bCur = tu_htole16(audio_state.acq_volume) };
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &cur_vol, sizeof(cur_vol));
-    } else if (request->bRequest == 4) {
-      uint8_t info = 3; // GET/SET supported
-      return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &info, sizeof(info));
     }
   }
   return false;
@@ -272,4 +263,10 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf, audio_feedba
 void tud_umount_cb(void)
 {
     usb_audio_stream_close();
+}
+
+void tud_suspend_cb(bool remote_wakeup_en)
+{
+    (void)remote_wakeup_en;
+    usb_audio_suspend();
 }

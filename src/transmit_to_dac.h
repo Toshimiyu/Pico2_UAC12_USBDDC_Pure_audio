@@ -38,10 +38,9 @@ extern void __not_in_flash_func(dma_tx_start)(void);
 extern void dma_stop_and_clear(void);
 extern bool dma_tx_fault_pending(void);
 extern uint8_t dma_tx_recover_fault(void);
-extern void pwm_i2s_streaming_rate_change(void);
-extern void set_pwm_isr_1(float period_us);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
+extern volatile uint32_t dma_tx_underrun_count;
 
 extern float i2s_actual_sample_rate(void);
 

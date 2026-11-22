@@ -10,7 +10,6 @@
 #include "usb_device_control.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
-#include "hardware/pwm.h"
 #include "hardware/regs/dma.h"
 #include "hardware/regs/pio.h"
 #include "i2s_pio_interface.h"
@@ -36,9 +35,14 @@ _Static_assert(sizeof(dma_tx_buffers) <= DMA_TX_SRAM_BANK_BYTES,
 static int dma_ch;
 static volatile bool dma_running;
 static volatile bool dma_running_pcm;
+static volatile bool dma_cleanly_stopped;
 static atomic_uint dma_ahb_fault;
 static atomic_bool dma_fault_quiescent;
-static const uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u] = {0};
+static uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u];
+static volatile bool dma_was_silence = true;
+static volatile int32_t dma_last_pcm_left;
+static volatile int32_t dma_last_pcm_right;
+volatile uint32_t dma_tx_underrun_count;
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -52,6 +56,10 @@ static void dma_tx_reset(void)
         dma_tx.data[i].tx_buf = dma_tx_buffers[i];
         dma_tx.data[i].tx_size = 0;
     }
+    memset(dma_silence, 0, sizeof(dma_silence));
+    dma_was_silence = true;
+    dma_last_pcm_left = 0;
+    dma_last_pcm_right = 0;
 }
 
 volatile bool enable_output = false;
@@ -61,17 +69,8 @@ float i2s_actual_sample_rate(void)
     return i2s_rate_from_clkdiv(clock_get_hz(clk_sys), pio->sm[sm].clkdiv);
 }
 
-// PWM
-static uint16_t pwm_slice;
-
 void __not_in_flash_func(dma_tx_start)(void);
 static bool prefill_waiting_for_pio = false;
-
-bool calc_pwm_clkdiv_and_wrap_us(float target_period_us, uint16_t *wrap_out, float *clkdiv_out);
-void set_pwm_isr_1(float period_us);
-void set_period_pwm_us(float period_us);
-void pwm_i2s_streaming_rate_change(void);
-void __not_in_flash_func(pwm_wrap_handler)(void);
 
 static bool __not_in_flash_func(dma_tx_check_ahb_errors)(void)
 {
@@ -95,7 +94,7 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
-    const uint32_t *buffer;
+    uint32_t *buffer;
     uint32_t words;
     if (dma_tx.using != 0)
     {
@@ -104,6 +103,22 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         words = dma_tx.data[rp].tx_size;
         dma_tx.rp = (rp + 1u) % DEPTH_DMA_TX_BUFFER;
         dma_running_pcm = true;
+
+        int32_t *samples = (int32_t *)buffer;
+        const uint32_t frames = words / 2u;
+        if (dma_was_silence)
+        {
+            const uint32_t fade_frames = frames < DMA_SILENCE_FRAMES ? frames : DMA_SILENCE_FRAMES;
+            for (uint32_t frame = 0; frame < fade_frames; frame++)
+            {
+                const int64_t numerator = frame + 1u;
+                samples[2u * frame] = (int32_t)(((int64_t)samples[2u * frame] * numerator) / fade_frames);
+                samples[2u * frame + 1u] = (int32_t)(((int64_t)samples[2u * frame + 1u] * numerator) / fade_frames);
+            }
+        }
+        dma_last_pcm_left = samples[words - 2u];
+        dma_last_pcm_right = samples[words - 1u];
+        dma_was_silence = false;
     }
     else
     {
@@ -113,9 +128,27 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         buffer = dma_silence;
         words = DMA_SILENCE_FRAMES * 2u;
         dma_running_pcm = false;
+        if (!dma_was_silence)
+        {
+            dma_tx_underrun_count++;
+            for (uint32_t frame = 0; frame < DMA_SILENCE_FRAMES; frame++)
+            {
+                const int64_t numerator = DMA_SILENCE_FRAMES - frame - 1u;
+                dma_silence[2u * frame] = (uint32_t)(((int64_t)dma_last_pcm_left * numerator) / DMA_SILENCE_FRAMES);
+                dma_silence[2u * frame + 1u] = (uint32_t)(((int64_t)dma_last_pcm_right * numerator) / DMA_SILENCE_FRAMES);
+            }
+            dma_last_pcm_left = 0;
+            dma_last_pcm_right = 0;
+            dma_was_silence = true;
+        }
+        else
+        {
+            memset(dma_silence, 0, sizeof(dma_silence));
+        }
     }
 
     dma_running = true;
+    dma_cleanly_stopped = false;
     dma_channel_set_read_addr(dma_ch, buffer, false);
     dma_channel_set_trans_count(dma_ch, words, true);
 }
@@ -144,26 +177,32 @@ void init_i2s_interface(void)
 {
     if(I2S_SLEWRATE_FAST_ENABLE)
     {
-        gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_SLOW);
-        gpio_set_slew_rate(I2S_SIDESET_BASE, GPIO_SLEW_RATE_SLOW);
-        gpio_set_slew_rate(I2S_SIDESET_BASE + 1, GPIO_SLEW_RATE_SLOW);
+        gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_FAST);
+        gpio_set_slew_rate(I2S_SIDESET_BASE, GPIO_SLEW_RATE_FAST);
+        gpio_set_slew_rate(I2S_SIDESET_BASE + 1, GPIO_SLEW_RATE_FAST);
     }
 
     if(I2S_STRENGTH_REINFORCE_ENABLE)
     {
-        gpio_set_drive_strength(I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_2MA);
-        gpio_set_drive_strength(I2S_SIDESET_BASE, GPIO_DRIVE_STRENGTH_2MA);
-        gpio_set_drive_strength(I2S_SIDESET_BASE + 1, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_drive_strength(I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_8MA);
+        gpio_set_drive_strength(I2S_SIDESET_BASE, GPIO_DRIVE_STRENGTH_8MA);
+        gpio_set_drive_strength(I2S_SIDESET_BASE + 1, GPIO_DRIVE_STRENGTH_8MA);
     }
 
     // Initialize PIO I2S.
     if(I2S_SIDESET_CHANGE)
     {
-        I2S_32bit_inv_program_init(pio, sm, I2S_DATA_PIN, I2S_SIDESET_BASE, AUDIO_INITIAL_FREQ, &sm_config, &offset);
+        I2S_program_init(pio, sm, &I2S_32bit_inv_program,
+                          I2S_32bit_inv_program_get_default_config,
+                          I2S_DATA_PIN, I2S_SIDESET_BASE, AUDIO_INITIAL_FREQ,
+                          &sm_config, &offset);
     }
     else
     {
-        I2S_32bit_program_init(pio, sm, I2S_DATA_PIN, I2S_SIDESET_BASE, AUDIO_INITIAL_FREQ, &sm_config, &offset);
+        I2S_program_init(pio, sm, &I2S_32bit_program,
+                          I2S_32bit_program_get_default_config,
+                          I2S_DATA_PIN, I2S_SIDESET_BASE, AUDIO_INITIAL_FREQ,
+                          &sm_config, &offset);
     }
 
     reset_i2s_freq();
@@ -177,6 +216,7 @@ void init_i2s_interface(void)
     dma_tx_reset();
     dma_running = false;
     dma_running_pcm = false;
+    dma_cleanly_stopped = false;
     atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_relaxed);
     atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
     dma_channel_configure(dma_ch, &config,
@@ -184,12 +224,6 @@ void init_i2s_interface(void)
     irq_set_exclusive_handler(DMA_IRQ_0, dma_tx_irq_handler);
     dma_channel_set_irq0_enabled(dma_ch, true);
     irq_set_enabled(DMA_IRQ_0, true);
-}
-
-// Notify the I2S transmit timing.
-void __not_in_flash_func(pwm_wrap_handler)(void)
-{
-    pwm_clear_irq(pwm_slice); // Clear the PWM interrupt flag.
 }
 
 // Maximum number of stereo frames copied into one DMA buffer.
@@ -262,7 +296,8 @@ void __not_in_flash_func(dma_tx_start)(void)
 
     if (!enable_output)
     {
-        dma_stop_and_clear();
+        if (!dma_cleanly_stopped)
+            dma_stop_and_clear();
         return;
     }
 
@@ -298,6 +333,11 @@ void __not_in_flash_func(dma_tx_start)(void)
 void dma_stop_and_clear(void)
 {
     const uint32_t irq_state = save_and_disable_interrupts();
+    if (dma_cleanly_stopped && !dma_running && dma_tx.using == 0)
+    {
+        restore_interrupts(irq_state);
+        return;
+    }
     dma_channel_set_irq0_enabled(dma_ch, false);
     // RP2350-E5: disable the channel before aborting it.
     hw_clear_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
@@ -315,6 +355,7 @@ void dma_stop_and_clear(void)
     dma_tx_reset();
     dma_running = false;
     dma_running_pcm = false;
+    dma_cleanly_stopped = true;
 
     // A clock/rate change starts a fresh playback epoch. Require the normal
     // buffer threshold and I2S phase resynchronization before output resumes.

@@ -49,7 +49,9 @@ static void boot_wait_ms(uint32_t ms)
 	absolute_time_t end = make_timeout_time_ms(ms);
 	while (!time_reached(end))
 	{
+		if (TEST_MODE) gpio_put(TEST_PIN1, true);
 		usb_audio_task();
+		if (TEST_MODE) gpio_put(TEST_PIN1, false);
 		service_idle_cleanup();
 		display_service();
 		sleep_us(1);
@@ -124,6 +126,7 @@ static void service_idle_cleanup(void)
 	{
 		clear_ringbuffer(&buffer_audio);
 		dma_stop_and_clear();
+		usb_audio_restart_buffering();
 		now_playing = 0;
 		last_observed_now_playing = 0;
 		last_audio_activity_us = time_us_32();
@@ -161,6 +164,7 @@ int main(void)
 		gpio_init(TEST_PIN2);
 		gpio_set_dir(TEST_PIN1, GPIO_OUT);
 		gpio_set_dir(TEST_PIN2, GPIO_OUT);
+		gpio_put(TEST_PIN1, false);
 	}
 
 	// Initialize buffers.
@@ -235,7 +239,9 @@ int main(void)
 		// watchdog_update();
 
 		// TinyUSB device task + direct PCM receive-to-I2S ring buffer + feedback/state management
+		if (TEST_MODE) gpio_put(TEST_PIN1, true);
 		usb_audio_task();
+		if (TEST_MODE) gpio_put(TEST_PIN1, false);
 		service_idle_cleanup();
 
 		sleep_us(1);

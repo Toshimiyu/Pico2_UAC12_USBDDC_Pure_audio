@@ -6,7 +6,7 @@
 #
 
 # Select the required CMSIS-DSP source files (keep the list minimal for the functions in use).
-file(GLOB DSP_SRC
+set(DSP_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_f32.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_init_f32.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_radix8_f32.c
@@ -18,6 +18,12 @@ file(GLOB DSP_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/CommonTables/arm_const_structs.c
         )
 
+foreach(DSP_FILE IN LISTS DSP_SRC)
+        if(NOT EXISTS "${DSP_FILE}")
+                message(FATAL_ERROR "Required CMSIS-DSP source file not found: ${DSP_FILE}")
+        endif()
+endforeach()
+
 # Add executable. Firmware version is set below.
 set(USB_AUDIO_CLASS_VERSION "2" CACHE STRING "USB Audio Class version (1 or 2)")
 set_property(CACHE USB_AUDIO_CLASS_VERSION PROPERTY STRINGS 1 2)
@@ -28,8 +34,8 @@ endif()
 set(USB_AUDIO_PREFILL_FRAMES "384" CACHE STRING "Legacy drain start threshold in stereo frames")
 if(NOT USB_AUDIO_PREFILL_FRAMES MATCHES "^[0-9]+$"
         OR USB_AUDIO_PREFILL_FRAMES LESS 1
-        OR USB_AUDIO_PREFILL_FRAMES GREATER_EQUAL 1536)
-        message(FATAL_ERROR "USB_AUDIO_PREFILL_FRAMES must be an integer from 1 to 1535")
+        OR USB_AUDIO_PREFILL_FRAMES GREATER_EQUAL 4096)
+        message(FATAL_ERROR "USB_AUDIO_PREFILL_FRAMES must be an integer from 1 to 4095")
 endif()
 
 set(PICO_FIRMWARE_VERSION "2.3")
@@ -84,7 +90,6 @@ target_link_libraries(Pico2_UAC12_USBDDC_Pure_audio
 # Add the standard include files to the build
 target_include_directories(Pico2_UAC12_USBDDC_Pure_audio PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/../pico-extras
         ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_CURRENT_LIST_DIR}/../CMSIS/Core/Include
         ${CMAKE_CURRENT_LIST_DIR}/../CMSIS/DSP/Include
@@ -103,7 +108,6 @@ target_link_libraries(Pico2_UAC12_USBDDC_Pure_audio
         pico_multicore
         hardware_clocks
         hardware_dma
-        hardware_pwm
         pico_float
         hardware_spi
         pico_unique_id

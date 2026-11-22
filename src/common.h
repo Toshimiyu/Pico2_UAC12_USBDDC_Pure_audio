@@ -24,8 +24,6 @@
 
 // String Desc.
 #define MFG_NAME ("Toshimiyu")
-#define DEVICE_NAME ("Pico2 UAC12 USB DDC Pure audio")
-#define WEBSITE_ADDR ("toshimi.yuze@gmail.com:")
 
 // Faster I2S slew rate
 #define I2S_SLEWRATE_FAST_ENABLE (false)
@@ -177,12 +175,11 @@ static inline uint32_t audio_ring_total_frames(void)
 	return (uint32_t)get_size_using(&buffer_audio) / 2u;
 }
 
-extern uint32_t calc_pwm_period_us(float period_us, uint16_t prescale);
 extern void volume_control(void);
 
 extern void renew_clock(void);
 
-inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
+static inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
 {
 	if (in > max)
 		return max;
@@ -191,7 +188,7 @@ inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
 	return in;
 }
 
-inline float saturation_f32(float in, float max, float min)
+static inline float saturation_f32(float in, float max, float min)
 {
 	if (in > max)
 		return max;
