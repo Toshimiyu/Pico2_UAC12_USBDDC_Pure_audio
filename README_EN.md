@@ -69,7 +69,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - On reception, resumes I²S zero output and waits for the DAC zero-detection interval and normal prefill before playback
 - Adds fades when PCM runs out or a stream stops, discards unplayed prefill on stop, and waits for previous output to finish before restarting
 - Expands the USB receive FIFO from 16 to 24 packets and adjusts retention when it approaches capacity
-- Hardware validation of final I²S stop/restart behavior and the DAC analog output remains outstanding
+- No pop noise was observed in the test environments listed below; the DAC analog waveform during stop and restart still requires separate measurement
 
 ### V2.3
 
@@ -167,9 +167,16 @@ The peak indicators update continuously with the input signal and may appear to 
 
 Onkyo HF Player supports UAC1 mode only. This project has been verified with HF Player in UAC1 mode on the Android device listed above.
 
-When using the Android standard driver instead of Onkyo HF Player's proprietary driver (e.g. with Foobar2000), operation has been verified in both UAC1 and UAC2 modes on the Sony XQ-ES44, but clicks may occur. After using Onkyo HF Player's proprietary driver, disconnect and reconnect the USB connector once before switching to the Android standard driver so that Android can recognize the device correctly.
+After using Onkyo HF Player's proprietary driver, disconnect and reconnect the USB connector once before switching to the Android standard driver so that Android can recognize the device correctly.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
+
+### v2.4 Test Results
+
+- UAC1: tested with Windows 11, the Android standard driver, and Onkyo HF Player's proprietary driver
+- UAC2: tested with Windows 11 and the Android standard driver
+
+No pop noise was observed in these test environments. This does not guarantee that it will not occur in other environments.
 
 ### Android Click Investigation
 
