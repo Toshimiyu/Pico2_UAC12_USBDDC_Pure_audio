@@ -31,14 +31,16 @@ extern void usb_sound_card_init(void);
 extern void usb_audio_task(void);
 
 extern usb_audio_state_t usb_audio_get_state(void);
+extern uint32_t usb_audio_rx_sequence(void);
 
 // ---- USB Audio class adapter API ---------------------------------------------
 extern bool usb_audio_rate_supported(uint32_t freq);
 // Call with Core1 locked out after clearing the ring/DMA when the host keeps the AS alt open.
 extern void usb_audio_restart_buffering(void);
 extern void usb_audio_suspend(void);
-extern volatile uint32_t usb_audio_fifo_dropped_frames;
 extern volatile uint32_t usb_audio_ring_write_failures;
+extern volatile uint32_t usb_audio_task_max_gap_us;
+extern volatile uint32_t usb_audio_task_gaps_over_1ms;
 extern void usb_audio_apply_sample_rate(uint32_t freq); // reconfigure I2S and clear queued PCM
 extern bool usb_audio_stream_open(uint8_t alt);			 // AS interface alternate setting
 extern void usb_audio_stream_close(void);				 // AS interface alt 0 / unmount

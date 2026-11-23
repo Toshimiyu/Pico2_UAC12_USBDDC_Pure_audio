@@ -98,6 +98,9 @@ static void display_service(void)
 
 static void service_idle_cleanup(void)
 {
+	if (dma_tx_startup_silence_active())
+		return;
+
 	const uint32_t now_us = time_us_32();
 	const uint32_t current_now_playing = now_playing;
 
@@ -125,7 +128,8 @@ static void service_idle_cleanup(void)
 	if (now_playing == last_observed_now_playing && !is_cleared_buffer)
 	{
 		clear_ringbuffer(&buffer_audio);
-		dma_stop_and_clear();
+		if (!dma_tx_is_silent())
+			dma_stop_and_clear();
 		usb_audio_restart_buffering();
 		now_playing = 0;
 		last_observed_now_playing = 0;

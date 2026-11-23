@@ -36,11 +36,17 @@ extern void reset_i2s_freq(void);
 extern void stop_i2s(void);
 extern void __not_in_flash_func(dma_tx_start)(void);
 extern void dma_stop_and_clear(void);
+// Call with Core1 locked out; the currently running transfer is allowed to finish.
+extern void dma_tx_discard_pending(void);
+extern bool dma_tx_startup_silence_active(void);
+extern bool dma_tx_clock_ready(void);
+extern bool dma_tx_is_silent(void);
 extern bool dma_tx_fault_pending(void);
 extern uint8_t dma_tx_recover_fault(void);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
 extern volatile uint32_t dma_tx_underrun_count;
+extern volatile uint32_t dma_tx_fadeout_count;
 
 extern float i2s_actual_sample_rate(void);
 

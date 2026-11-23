@@ -85,9 +85,10 @@ extern "C" {
 // Largest OUT packet over all alternate settings
 #define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX              USB_AUDIO_CLASS_EP_OUT_SIZE_MAX
 
-// Round to a multiple of all supported stereo frame sizes (4, 6, 8 bytes),
-// so overwriting a full FIFO cannot split a PCM frame.
-#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ           (((16 * USB_AUDIO_CLASS_EP_OUT_SIZE_MAX + 23) / 24) * 24)
+// Buffer up to 24 full-speed OUT packets to tolerate short bursts or delayed
+// Core0 servicing. Round to a multiple of all supported stereo frame sizes
+// (4, 6, 8 bytes), so FIFO wrap/overwrite cannot split a PCM frame.
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ           (((24 * USB_AUDIO_CLASS_EP_OUT_SIZE_MAX + 23) / 24) * 24)
 
 #define CFG_TUD_AUDIO_ENABLE_EP_OUT                     1
 

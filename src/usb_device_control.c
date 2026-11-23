@@ -15,6 +15,7 @@
 // with a small PI controller (XMOS-style), NOT from the TinyUSB FIFO count.
 
 #include <math.h>
+#include <stdatomic.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "tusb.h"
@@ -31,8 +32,29 @@ extern uint32_t now_playing;
 // Referenced from main.c / display_rta.c (activity monitor)
 volatile uint32_t audio_last_data_us = 0;
 volatile bool audio_data_seen = false;
-volatile uint32_t usb_audio_fifo_dropped_frames = 0;
 volatile uint32_t usb_audio_ring_write_failures = 0;
+volatile uint32_t usb_audio_task_max_gap_us = 0;
+volatile uint32_t usb_audio_task_gaps_over_1ms = 0;
+static uint32_t usb_audio_task_previous_us;
+static atomic_uint usb_audio_rx_packets;
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-free atomic integers");
+
+bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id,
+                           uint8_t ep_out, uint8_t cur_alt_setting)
+{
+	(void)rhport;
+	(void)func_id;
+	(void)ep_out;
+	(void)cur_alt_setting;
+	if (n_bytes_received != 0u)
+		atomic_fetch_add_explicit(&usb_audio_rx_packets, 1u, memory_order_relaxed);
+	return true;
+}
+
+uint32_t usb_audio_rx_sequence(void)
+{
+	return atomic_load_explicit(&usb_audio_rx_packets, memory_order_relaxed);
+}
 
 //--------------------------------------------------------------------+
 // Tunables
@@ -164,10 +186,9 @@ static void flush_audio_fifo(void)
 //
 //   SET_CUR       -> remember pending_freq, state = SWITCHING (nothing else is touched yet)
 //   SWITCHING     -> USB data is discarded and feedback is paused. Core1 keeps playing the Ring and the
-//                    DMA pool with the OLD clock and stops by itself (enable_output = false) when both
-//                    are empty (dma_tx_start()).
+//                    DMA pool with the OLD clock, then continues outputting zeros when both are empty.
 //   quiet         -> [Core1 locked out] renew_clock, clear Ring / USB FIFO, fb_reset
-//   BUFFERING     -> the existing gate refills to the FB target and restarts PIO (reset_i2s_freq)
+//   BUFFERING     -> the existing gate refills to the FB target before playback resumes
 //
 // Only Core0 takes part: no change is needed in dma_tx_start().
 //--------------------------------------------------------------------+
@@ -199,6 +220,8 @@ void usb_audio_apply_sample_rate(uint32_t new_freq)
 static void service_switch(void)
 {
 	if (audio_state_machine != USB_AUDIO_SWITCHING)
+		return;
+	if (!dma_tx_clock_ready())
 		return;
 
 	const uint32_t waited_us = time_us_32() - switch_t0_us;
@@ -281,7 +304,15 @@ void usb_audio_stream_close(void)
 	rate_unsupported = false;
 	// A pending rate change keeps running: it will end in IDLE because cur_alt is 0 now.
 	// Otherwise Core1 simply plays out what is left in the Ring / DMA pool.
-	if (audio_state_machine != USB_AUDIO_SWITCHING)
+	if (audio_state_machine == USB_AUDIO_BUFFERING)
+	{
+		multicore_lockout_start_blocking();
+		set_state(USB_AUDIO_IDLE);
+		clear_ringbuffer(&buffer_audio);
+		dma_tx_discard_pending();
+		multicore_lockout_end_blocking();
+	}
+	else if (audio_state_machine != USB_AUDIO_SWITCHING)
 		set_state(USB_AUDIO_IDLE);
 	flush_audio_fifo(); // FIFO tail the host sent just before alt 0
 }
@@ -294,8 +325,8 @@ void usb_audio_suspend(void)
 	set_state(USB_AUDIO_IDLE);
 	clear_audio_buffers();
 	flush_audio_fifo();
-	dma_stop_and_clear();
-	stop_i2s();
+	// Let Core1 play out any queued DMA block and fade its final PCM sample
+	// to silence. Aborting DMA/PIO here can leave a non-zero output step.
 	fb_reset();
 	multicore_lockout_end_blocking();
 }
@@ -417,12 +448,15 @@ static void service_rx(void)
 		return;
 	}
 
+	// Keep the OUT FIFO from accumulating stale audio when Core0 has been
+	// delayed. Retain the newest half so the stream can catch up promptly.
 	const uint16_t fifo_depth = CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ;
 	if (avail > (fifo_depth / 4u) * 3u)
 	{
-		const uint16_t retain = (uint16_t)((fifo_depth / 2u / frame_bytes) * frame_bytes);
+		// The FIFO is 1.5x larger than before; retain 7/12 of it so the
+		// emergency trim removes about the same byte count as the old 16-packet FIFO.
+		const uint16_t retain = (uint16_t)(((fifo_depth * 7u / 12u) / frame_bytes) * frame_bytes);
 		uint32_t discard = avail - retain;
-		usb_audio_fifo_dropped_frames += discard / frame_bytes;
 		while (discard != 0)
 		{
 			uint16_t n = (uint16_t)(discard > sizeof(rx_raw) ? sizeof(rx_raw) : discard);
@@ -523,7 +557,7 @@ static void service_state(void)
 		if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
 			prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
 
-		if ((uint32_t)level >= prefill_frames)
+		if ((uint32_t)level >= prefill_frames && !enable_output && dma_tx_clock_ready())
 		{
 			set_state(USB_AUDIO_STREAMING);
 		}
@@ -691,6 +725,18 @@ void usb_sound_card_init(void)
 
 void usb_audio_task(void)
 {
+    static bool startup_audio_released = false;
+    const uint32_t task_now_us = time_us_32();
+    if (usb_audio_task_previous_us != 0u)
+    {
+        const uint32_t gap_us = task_now_us - usb_audio_task_previous_us;
+        if (gap_us > usb_audio_task_max_gap_us)
+            usb_audio_task_max_gap_us = gap_us;
+        if (gap_us > 1000u)
+            usb_audio_task_gaps_over_1ms++;
+    }
+    usb_audio_task_previous_us = task_now_us;
+
     tud_task();
     if (dma_tx_fault_pending())
     {
@@ -703,6 +749,16 @@ void usb_audio_task(void)
             fb_reset();
         }
         multicore_lockout_end_blocking();
+    }
+    if (!startup_audio_released)
+    {
+        flush_audio_fifo();
+        if (dma_tx_startup_silence_active())
+        {
+            service_feedback();
+            return;
+        }
+        startup_audio_released = true;
     }
     service_switch();
     service_rx();

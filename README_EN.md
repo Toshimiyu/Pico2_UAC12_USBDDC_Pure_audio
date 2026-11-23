@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
-**Current version: v2.3**
+**Current version: v2.4**
 
 ## Description
 
@@ -29,6 +29,10 @@ Audio processing remains:
 
 Before USB audio data is written to the ring buffer, its PCM sample width (16/24/32-bit) and stereo frame boundaries are checked. If an invalid format or boundary is detected, the TinyUSB OUT FIFO is cleared to resynchronize. The playback state machine waits for valid data and resumes through the normal rebuffering sequence.
 
+At startup, I²S clocks and zero data are sent for 10 seconds, and USB audio received during that period is discarded. A clock stall extends the wait, and sample-rate changes are applied after the period ends. Thereafter, if no USB audio data arrives for one second, I²S data and clocks are driven low after queued audio and the fade have finished. Silent USB audio packets still count as data. On reception, clocks and zero data resume, followed by playback after the DAC zero-detection interval and normal prefill. This does not guarantee 0 V at the DAC's analog output or synchronize with the amplifier's power-up; measure the DAC output before connecting the amplifier.
+
+If a stream stops during prefill, unplayed data is discarded. Any DMA block already in progress finishes and fades out. On stream restart, new audio waits for the previous output to fade out. A seek without closing the stream cannot be detected, so its boundary is not smoothed.
+
 Display features such as the 11-band FFT analyzer and real-time level meters have been retained and improved.
 
 **Build Verified**
@@ -52,11 +56,20 @@ Software oversampling and FIR filtering were removed because the PCM5100A alread
 
 The firmware does not perform oversampling, FIR filtering, or sample-rate conversion, but it always applies a fixed output gain ratio of 0.80 and also applies UAC1/UAC2 host volume settings (0 to -64 dB) and mute in software, changing the PCM sample values.
 
-USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM. Volume changes still take effect immediately. Audio already queued in the ring and DMA is not changed, so the audible response is delayed by the queued audio. Input faults and underruns do not trigger automatic mute or fading.
+USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM. Volume changes still take effect immediately. Audio already queued in the ring and DMA is not changed, so the audible response is delayed by the queued audio. When PCM runs out, the last sample fades to zero over 64 frames, and playback fades in over approximately 5 ms on resumption.
 
 ---
 
 ## Change History
+
+### V2.4
+
+- Outputs zero data over I²S for 10 seconds at startup and discards USB audio during that period
+- Stops I²S after one second without USB audio data, once remaining audio and the zero-detection interval have completed; continues while silent audio data arrives
+- On reception, resumes I²S zero output and waits for the DAC zero-detection interval and normal prefill before playback
+- Adds fades when PCM runs out or a stream stops, discards unplayed prefill on stop, and waits for previous output to finish before restarting
+- Expands the USB receive FIFO from 16 to 24 packets and adjusts retention when it approaches capacity
+- Hardware validation of final I²S stop/restart behavior and the DAC analog output remains outstanding
 
 ### V2.3
 
@@ -100,7 +113,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 - Selectable USB Audio Class 1.0 / 2.0
 - Asynchronous feedback control using an Async Feedback Endpoint
-- Starts I²S playback and PI feedback control after a sample-rate-dependent prefill of approximately 6 ms
+- Starts I²S playback and PI feedback control after a prefill of at least 2048 frames
 - 11-band FFT display with A-weighting
 - No oversampling (NOS)
 - No FIR filtering
@@ -111,7 +124,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - PICO_AUDIO_PACK support
 - Pico Display Pack 2.0 support
 
-During playback, DMA fills PCM underruns with silence and resumes when data arrives. If the USB FIFO approaches capacity, some oldest data is discarded on frame boundaries. DMA starts each block from its completion interrupt, so long interrupt delays can interrupt the I²S clock. Clock continuity while stopped or changing rates is not guaranteed.
+During playback, DMA fills PCM underruns with silence and resumes when data arrives. If the USB FIFO approaches capacity, some oldest data is discarded on frame boundaries. DMA starts each block from its completion interrupt, so long interrupt delays can interrupt the I²S clock. Clock continuity during rate changes or error recovery is not guaranteed.
 
 ---
 
