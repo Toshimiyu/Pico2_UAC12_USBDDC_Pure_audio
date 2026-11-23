@@ -69,7 +69,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - On reception, resumes I²S zero output and waits for the DAC zero-detection interval and normal prefill before playback
 - Adds fades when PCM runs out or a stream stops, discards unplayed prefill on stop, and waits for previous output to finish before restarting
 - Expands the USB receive FIFO from 16 to 24 packets and adjusts retention when it approaches capacity
-- No pop noise was observed in the test environments listed below; the DAC analog waveform during stop and restart still requires separate measurement
+- Pop noise was greatly reduced compared with before the improvements in the test environments listed below; the DAC analog waveform during stop and restart still requires separate measurement
 
 ### V2.3
 
@@ -176,7 +176,7 @@ Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured
 - UAC1: tested with Windows 11, the Android standard driver, and Onkyo HF Player's proprietary driver
 - UAC2: tested with Windows 11 and the Android standard driver
 
-No pop noise was observed in these test environments. This does not guarantee that it will not occur in other environments.
+Pop noise was greatly reduced in these test environments compared with before the improvements. However, it may still occur very rarely and cannot be considered completely eliminated. The cause of the random noise has not been identified.
 
 ### Android Click Investigation
 
