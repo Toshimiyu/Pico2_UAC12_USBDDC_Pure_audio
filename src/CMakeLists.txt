@@ -38,7 +38,7 @@ if(NOT USB_AUDIO_PREFILL_FRAMES MATCHES "^[0-9]+$"
         message(FATAL_ERROR "USB_AUDIO_PREFILL_FRAMES must be an integer from 1 to 4095")
 endif()
 
-set(PICO_FIRMWARE_VERSION "2.4")
+set(PICO_FIRMWARE_VERSION "2.5")
 
 if(USB_AUDIO_CLASS_VERSION STREQUAL "1")
         set(USB_AUDIO_CLASS_SOURCE usb_audio_uac1.c)

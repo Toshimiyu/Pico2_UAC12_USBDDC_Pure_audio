@@ -38,9 +38,14 @@ extern bool usb_audio_rate_supported(uint32_t freq);
 // Call with Core1 locked out after clearing the ring/DMA when the host keeps the AS alt open.
 extern void usb_audio_restart_buffering(void);
 extern void usb_audio_suspend(void);
+extern void usb_audio_resume(void);
+extern void usb_audio_reset(void);
 extern volatile uint32_t usb_audio_ring_write_failures;
 extern volatile uint32_t usb_audio_task_max_gap_us;
 extern volatile uint32_t usb_audio_task_gaps_over_1ms;
+extern volatile uint32_t usb_audio_buffering_timeouts;
+extern volatile uint32_t usb_audio_clock_wait_timeouts;
+extern volatile uint32_t usb_audio_resume_failures;
 extern void usb_audio_apply_sample_rate(uint32_t freq); // reconfigure I2S and clear queued PCM
 extern bool usb_audio_stream_open(uint8_t alt);			 // AS interface alternate setting
 extern void usb_audio_stream_close(void);				 // AS interface alt 0 / unmount

@@ -262,11 +262,21 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf, audio_feedba
 
 void tud_umount_cb(void)
 {
-    usb_audio_stream_close();
+    usb_audio_reset();
+}
+
+void tud_mount_cb(void)
+{
+    usb_audio_reset();
 }
 
 void tud_suspend_cb(bool remote_wakeup_en)
 {
     (void)remote_wakeup_en;
     usb_audio_suspend();
+}
+
+void tud_resume_cb(void)
+{
+    usb_audio_resume();
 }

@@ -23,8 +23,11 @@
 #include "ringbuffer.h"
 #include "display_rta.h"
 #include "spectrum.h"
+#include "idle_clock.h"
 
 #define IDLE_CLEANUP_TIMEOUT_US (500000u)
+_Static_assert(IDLE_CLEANUP_TIMEOUT_US < IDLE_CLOCK_TIMEOUT_US,
+			   "Idle cleanup must precede the I2S idle-clock timeout");
 
 // ring buffer
 RINGBUFFER buffer_audio;

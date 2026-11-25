@@ -26,6 +26,9 @@
 #include "ringbuffer.h"
 #include "display_rta.h"
 #include "transmit_to_dac.h"
+#include "audio_fade.h"
+#include "pcm_silence_fade.h"
+#include "audio_wait_timeout.h"
 
 extern uint32_t now_playing;
 
@@ -35,6 +38,9 @@ volatile bool audio_data_seen = false;
 volatile uint32_t usb_audio_ring_write_failures = 0;
 volatile uint32_t usb_audio_task_max_gap_us = 0;
 volatile uint32_t usb_audio_task_gaps_over_1ms = 0;
+volatile uint32_t usb_audio_buffering_timeouts = 0;
+volatile uint32_t usb_audio_clock_wait_timeouts = 0;
+volatile uint32_t usb_audio_resume_failures = 0;
 static uint32_t usb_audio_task_previous_us;
 static atomic_uint usb_audio_rx_packets;
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-free atomic integers");
@@ -81,6 +87,10 @@ uint32_t usb_audio_rx_sequence(void)
 // Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
 // Worst case drain = (Ring 4096 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 115 ms.
 #define SWITCH_DRAIN_TIMEOUT_US (150000u)
+// At 44.1 kHz, prefill takes about 47 ms and DAC zero detection about 25 ms.
+#define BUFFERING_TIMEOUT_US (1000000u)
+#define CLOCK_WAIT_TIMEOUT_US (250000u)
+#define RX_RECENT_TIMEOUT_US (50000u)
 
 //--------------------------------------------------------------------+
 // Module state
@@ -89,6 +99,8 @@ static volatile usb_audio_state_t audio_state_machine = USB_AUDIO_IDLE;
 static volatile uint8_t cur_alt = 0;
 static volatile uint8_t bytes_per_sample = 2;
 static volatile bool rate_unsupported = false;
+static bool audio_suspended = false;
+static pcm_silence_fade_t usb_pcm_silence_fade;
 typedef struct
 {
 	float current;
@@ -112,7 +124,13 @@ static fb_ctrl_t fb;
 
 // Sample-rate switch sequence (Ver1.2), Core0 only
 static uint32_t pending_freq = 0;	// rate requested by SET_CUR, applied when the output is quiet
-static uint32_t switch_t0_us = 0;	// time the SWITCHING state was entered
+static uint32_t switch_t0_us = 0;	// start of the clock-ready drain period
+static bool switch_drain_started;
+static audio_wait_timeout_t buffering_wait;
+static audio_wait_timeout_t clock_wait;
+static uint32_t diagnostic_rx_sequence;
+static uint32_t diagnostic_rx_last_us;
+static bool diagnostic_rx_seen;
 
 static uint8_t rx_raw[RX_CHUNK_FRAMES * 8];
 static float ep_Lch[RX_CHUNK_FRAMES];
@@ -164,6 +182,7 @@ static void clear_audio_buffers(void)
 	usb_gain_ramp.frames = (uint32_t)(((uint64_t)audio_state.freq * 5u + 999u) / 1000u);
 	if (usb_gain_ramp.frames == 0u)
 		usb_gain_ramp.frames = 1u;
+	pcm_silence_fade_reset(&usb_pcm_silence_fade, audio_state.freq);
 	clear_ringbuffer(&buffer_audio);
 }
 
@@ -198,7 +217,7 @@ static void switch_begin(uint32_t freq)
 	if (audio_state_machine == USB_AUDIO_SWITCHING)
 		return; // already draining: only the target rate changes, keep the start time
 
-	switch_t0_us = time_us_32();
+	switch_drain_started = false;
 	set_state(USB_AUDIO_SWITCHING);
 }
 
@@ -221,10 +240,19 @@ static void service_switch(void)
 {
 	if (audio_state_machine != USB_AUDIO_SWITCHING)
 		return;
-	if (!dma_tx_clock_ready())
+	if (audio_suspended || !dma_tx_clock_ready())
+	{
+		switch_drain_started = false;
 		return;
+	}
 
-	const uint32_t waited_us = time_us_32() - switch_t0_us;
+	const uint32_t now_us = time_us_32();
+	if (!switch_drain_started)
+	{
+		switch_t0_us = now_us;
+		switch_drain_started = true;
+	}
+	const uint32_t waited_us = (uint32_t)(now_us - switch_t0_us);
 	const bool quiet = !enable_output && (dma_tx.using == 0);
 	const bool timeout = !quiet && (waited_us >= SWITCH_DRAIN_TIMEOUT_US);
 	if (!quiet && !timeout)
@@ -233,6 +261,14 @@ static void service_switch(void)
 	const bool freq_changed = (pending_freq != audio_state.freq);
 
 	multicore_lockout_start_blocking();
+
+	// Core1 may have stopped the clock after the first readiness check.
+	if (!dma_tx_clock_ready())
+	{
+		switch_drain_started = false;
+		multicore_lockout_end_blocking();
+		return;
+	}
 
 	// Check again with Core1 frozen: it may have (re)started output after the check above.
 	if (enable_output || dma_tx.using != 0)
@@ -317,18 +353,41 @@ void usb_audio_stream_close(void)
 	flush_audio_fifo(); // FIFO tail the host sent just before alt 0
 }
 
+void usb_audio_reset(void)
+{
+	usb_audio_stream_close();
+	audio_suspended = false;
+}
+
 void usb_audio_suspend(void)
 {
-	cur_alt = 0;
-	rate_unsupported = false;
+	audio_suspended = true;
 	multicore_lockout_start_blocking();
-	set_state(USB_AUDIO_IDLE);
+	if (audio_state_machine != USB_AUDIO_SWITCHING)
+		set_state(USB_AUDIO_IDLE);
 	clear_audio_buffers();
 	flush_audio_fifo();
 	// Let Core1 play out any queued DMA block and fade its final PCM sample
 	// to silence. Aborting DMA/PIO here can leave a non-zero output step.
 	fb_reset();
 	multicore_lockout_end_blocking();
+}
+
+void usb_audio_resume(void)
+{
+	if (!audio_suspended)
+		return;
+	audio_suspended = false;
+	if (cur_alt != 0)
+	{
+		if (!usb_audio_stream_open(cur_alt))
+		{
+			usb_audio_resume_failures++;
+			set_state(USB_AUDIO_IDLE);
+		}
+	}
+	else if (audio_state_machine != USB_AUDIO_SWITCHING)
+		set_state(USB_AUDIO_IDLE);
 }
 
 void usb_audio_restart_buffering(void)
@@ -506,9 +565,14 @@ static void service_rx(void)
 		pcm_to_float(rx_raw, frames, bps, ep_Lch, ep_Rch);
 		const float target_gain = audio_state.mute ? 0.0f : audio_state.vol_float * DEFAULT_GAIN_RATIO;
 		audio_gain_ramp_set_target(target_gain);
+		const bool dma_will_fade_in = dma_tx_is_silent();
 		const audio_gain_ramp_t ramp_before = usb_gain_ramp;
 		for (uint32_t i = 0; i < frames; ++i)
 		{
+			const bool input_silence = ep_Lch[i] == 0.0f && ep_Rch[i] == 0.0f;
+			const uint32_t silence_gain =
+				pcm_silence_fade_next_gain(&usb_pcm_silence_fade, input_silence,
+										   dma_will_fade_in);
 			if (usb_gain_ramp.remaining != 0u)
 			{
 				usb_gain_ramp.current += usb_gain_ramp.step;
@@ -517,8 +581,10 @@ static void service_rx(void)
 			}
 			ep_Lch[i] *= usb_gain_ramp.current;
 			ep_Rch[i] *= usb_gain_ramp.current;
-			pcm_stereo[2u * i] = (int32_t)ep_Lch[i];
-			pcm_stereo[2u * i + 1u] = (int32_t)ep_Rch[i];
+			pcm_stereo[2u * i] =
+				audio_fade_apply_q16((int32_t)ep_Lch[i], silence_gain);
+			pcm_stereo[2u * i + 1u] =
+				audio_fade_apply_q16((int32_t)ep_Rch[i], silence_gain);
 		}
 
 		report_peak(ep_Lch, ep_Rch, frames);
@@ -582,6 +648,27 @@ static void service_state(void)
 	default:
 		break;
 	}
+}
+
+static void service_wait_diagnostics(void)
+{
+	const uint32_t now = time_us_32();
+	const uint32_t sequence = usb_audio_rx_sequence();
+	if (sequence != diagnostic_rx_sequence)
+	{
+		diagnostic_rx_sequence = sequence;
+		diagnostic_rx_last_us = now;
+		diagnostic_rx_seen = true;
+	}
+	const bool receiving = diagnostic_rx_seen &&
+		(uint32_t)(now - diagnostic_rx_last_us) < RX_RECENT_TIMEOUT_US;
+	const bool buffering = !audio_suspended && audio_state_machine == USB_AUDIO_BUFFERING && receiving;
+	const bool clock_waiting = !audio_suspended && !dma_tx_clock_ready() &&
+		(audio_state_machine == USB_AUDIO_SWITCHING || buffering);
+	if (audio_wait_timeout_update(&buffering_wait, buffering, now, BUFFERING_TIMEOUT_US))
+		usb_audio_buffering_timeouts++;
+	if (audio_wait_timeout_update(&clock_wait, clock_waiting, now, CLOCK_WAIT_TIMEOUT_US))
+		usb_audio_clock_wait_timeouts++;
 }
 
 //--------------------------------------------------------------------+
@@ -763,6 +850,7 @@ void usb_audio_task(void)
     service_switch();
     service_rx();
     service_state();
+    service_wait_diagnostics();
     service_feedback();
 }
 

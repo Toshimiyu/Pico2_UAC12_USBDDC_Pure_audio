@@ -15,6 +15,7 @@
 #include "i2s_pio_interface.h"
 #include "i2s_rate.h"
 #include "idle_clock.h"
+#include "audio_fade.h"
 #include <stdatomic.h>
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic integers");
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic booleans");
@@ -26,10 +27,15 @@ static uint offset;
 
 #define DMA_TX_SRAM_BANK_BYTES (64u * 1024u)
 #define DMA_SILENCE_FRAMES (64u)
+#define DMA_EMPTY_FADE_MS (5u)
+#define DMA_EMPTY_FADE_MAX_FRAMES ((192000u * DMA_EMPTY_FADE_MS + 999u) / 1000u)
 #define DMA_START_FADE_MS (5u)
-#define DMA_STARTUP_SILENCE_US (10000000u)
+#define DMA_STARTUP_SILENCE_US (7000000u)
 #define DAC_ZERO_DETECT_FRAMES (1024u)
 #define DAC_ZERO_SETTLE_MARGIN_US (1000u)
+
+_Static_assert((AUDIO_FREQ_MAX * DMA_START_FADE_MS + 999u) / 1000u <= 65535u,
+               "Fade frame count must fit in Q16 numerator");
 
 static uint32_t __attribute__((section(".dma_sram_bank7")))
     dma_tx_buffers[DEPTH_DMA_TX_BUFFER][SIZE_DMA_TX_BUF];
@@ -54,7 +60,7 @@ static volatile uint32_t dma_restart_since_us;
 static idle_clock_timer_t dma_idle_timer;
 static bool dma_idle_silence_started;
 static uint32_t dma_idle_silence_since_us;
-static uint32_t dma_silence[DMA_SILENCE_FRAMES * 4u];
+static uint32_t dma_silence[(DMA_EMPTY_FADE_MAX_FRAMES + DMA_SILENCE_FRAMES) * 2u];
 static volatile bool dma_was_silence = true;
 static volatile bool dma_fade_out_in_flight;
 static uint32_t dma_fade_in_total;
@@ -161,8 +167,9 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         for (uint32_t frame = 0; frame < frames && dma_fade_in_remaining != 0u; frame++)
         {
             const uint32_t numerator = dma_fade_in_total - dma_fade_in_remaining + 1u;
-            samples[2u * frame] = (int32_t)(((int64_t)samples[2u * frame] * numerator) / dma_fade_in_total);
-            samples[2u * frame + 1u] = (int32_t)(((int64_t)samples[2u * frame + 1u] * numerator) / dma_fade_in_total);
+            const uint32_t gain = audio_fade_gain_q16(numerator, dma_fade_in_total);
+            samples[2u * frame] = audio_fade_apply_q16(samples[2u * frame], gain);
+            samples[2u * frame + 1u] = audio_fade_apply_q16(samples[2u * frame + 1u], gain);
             dma_fade_in_remaining--;
         }
         dma_last_pcm_left = samples[words - 2u];
@@ -181,14 +188,25 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
                 dma_tx_underrun_count++;
             else
                 dma_tx_fadeout_count++;
-            for (uint32_t frame = 0; frame < DMA_SILENCE_FRAMES; frame++)
+            uint32_t fade_frames =
+                (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
+            if (fade_frames == 0u)
+                fade_frames = 1u;
+            if (fade_frames > DMA_EMPTY_FADE_MAX_FRAMES)
+                fade_frames = DMA_EMPTY_FADE_MAX_FRAMES;
+            for (uint32_t frame = 0; frame < fade_frames; frame++)
             {
-                const int64_t numerator = DMA_SILENCE_FRAMES - frame - 1u;
-                dma_silence[2u * frame] = (uint32_t)(((int64_t)dma_last_pcm_left * numerator) / DMA_SILENCE_FRAMES);
-                dma_silence[2u * frame + 1u] = (uint32_t)(((int64_t)dma_last_pcm_right * numerator) / DMA_SILENCE_FRAMES);
+                const uint32_t numerator = fade_frames - frame - 1u;
+                const uint32_t gain = audio_fade_gain_q16(numerator, fade_frames);
+                dma_silence[2u * frame] =
+                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_left, gain);
+                dma_silence[2u * frame + 1u] =
+                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_right, gain);
             }
+            memset(&dma_silence[fade_frames * 2u], 0,
+                   DMA_SILENCE_FRAMES * 2u * sizeof(dma_silence[0]));
             // The trailing zero block lets the PIO drain the fade before a clock change.
-            words = DMA_SILENCE_FRAMES * 4u;
+            words = (fade_frames + DMA_SILENCE_FRAMES) * 2u;
             dma_fade_out_in_flight = true;
             dma_last_pcm_left = 0;
             dma_last_pcm_right = 0;
@@ -197,7 +215,7 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         }
         else
         {
-            memset(dma_silence, 0, sizeof(dma_silence));
+            memset(dma_silence, 0, DMA_SILENCE_FRAMES * 2u * sizeof(dma_silence[0]));
         }
     }
 
@@ -396,6 +414,8 @@ void __not_in_flash_func(dma_tx_start)(void)
         }
     }
 
+    // main.c's 500 ms idle cleanup must remain earlier than the 1 s idle-clock
+    // timeout: it exits STREAMING and clears sub-prefill remnants so quiet can become true.
     const uint32_t idle_irq_state = save_and_disable_interrupts();
     const bool quiet = !enable_output && dma_tx_is_silent() &&
         get_size_using(&buffer_audio) == 0;
