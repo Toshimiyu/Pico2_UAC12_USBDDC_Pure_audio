@@ -303,8 +303,8 @@ bool usb_audio_stream_open(uint8_t alt)
 		return true;
 
 	// Same-rate (re)open: the clock does not change, so there is nothing to wait for. Start a fresh
-	// buffer epoch, but with Core1 frozen: clear_ringbuffer() takes no spinlock, so clearing while
-	// Core1 reads the Ring could leave size_using negative.
+	// buffer epoch with Core1 frozen. Its ring fetch disables interrupts, so lockout waits for
+	// any in-progress fetch to finish before clear_ringbuffer() resets the spinlocked Ring.
 	// Full-Speed can not carry 24/32bit above 96kHz : do not pretend to play it
 	rate_unsupported = !stream_rate_supported(alt, audio_state.freq);
 
