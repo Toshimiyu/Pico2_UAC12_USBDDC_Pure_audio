@@ -35,8 +35,6 @@ If a stream stops during prefill, unplayed data is discarded. Any DMA block alre
 
 On USB suspend, unplayed ring data is discarded. On resume, the host's alternate setting is retained and playback re-prefills; after a bus reset, the host must reopen the stream.
 
-The debugger can inspect `dma_tx_underrun_count`, `usb_audio_task_gaps_over_1ms`, and `usb_audio_ring_write_failures`; compare their values during playback. `usb_audio_buffering_timeouts` increments once per buffering wait lasting one second while packets continue arriving. `usb_audio_clock_wait_timeouts` increments once per 250 ms clock-readiness wait during rate switching or buffering with incoming packets. A gap of 50 ms without packets breaks the continuous-reception wait. These timeouts are diagnostic only and never bypass playback or clock-switch safety conditions. `usb_audio_resume_failures` increments if the saved alternate setting cannot be reopened on resume.
-
 The 150 ms forced-drain deadline for a sample-rate change starts only after the clock is ready; time spent suspended or waiting for the clock is excluded.
 
 Display features such as the 11-band FFT analyzer and real-time level meters have been retained and improved.
@@ -74,7 +72,6 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - Changes the PCM-underrun fade-out to approximately 5 ms based on the sample rate and adds an approximately 5 ms fade-in after at least 2 ms of zero PCM
 - Improves alternate-setting preservation and re-prefill on USB suspend/resume, and resets state on bus reset
 - Starts the sample-rate-change forced-drain deadline only after the clock is ready
-- Adds debug counters for buffering and clock-readiness timeouts and resume failures
 - Pop noise and DAC analog output waveforms with v2.5 still require hardware verification
 
 ### V2.4
