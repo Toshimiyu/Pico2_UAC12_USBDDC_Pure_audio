@@ -28,20 +28,12 @@
 #include "transmit_to_dac.h"
 #include "audio_fade.h"
 #include "pcm_silence_fade.h"
-#include "audio_wait_timeout.h"
 
 extern uint32_t now_playing;
 
 // Referenced from main.c / display_rta.c (activity monitor)
 volatile uint32_t audio_last_data_us = 0;
 volatile bool audio_data_seen = false;
-volatile uint32_t usb_audio_ring_write_failures = 0;
-volatile uint32_t usb_audio_task_max_gap_us = 0;
-volatile uint32_t usb_audio_task_gaps_over_1ms = 0;
-volatile uint32_t usb_audio_buffering_timeouts = 0;
-volatile uint32_t usb_audio_clock_wait_timeouts = 0;
-volatile uint32_t usb_audio_resume_failures = 0;
-static uint32_t usb_audio_task_previous_us;
 static atomic_uint usb_audio_rx_packets;
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-free atomic integers");
 
@@ -87,10 +79,6 @@ uint32_t usb_audio_rx_sequence(void)
 // Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
 // Worst case drain = (Ring 4096 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 115 ms.
 #define SWITCH_DRAIN_TIMEOUT_US (150000u)
-// At 44.1 kHz, prefill takes about 47 ms and DAC zero detection about 25 ms.
-#define BUFFERING_TIMEOUT_US (1000000u)
-#define CLOCK_WAIT_TIMEOUT_US (250000u)
-#define RX_RECENT_TIMEOUT_US (50000u)
 
 //--------------------------------------------------------------------+
 // Module state
@@ -126,11 +114,6 @@ static fb_ctrl_t fb;
 static uint32_t pending_freq = 0;	// rate requested by SET_CUR, applied when the output is quiet
 static uint32_t switch_t0_us = 0;	// start of the clock-ready drain period
 static bool switch_drain_started;
-static audio_wait_timeout_t buffering_wait;
-static audio_wait_timeout_t clock_wait;
-static uint32_t diagnostic_rx_sequence;
-static uint32_t diagnostic_rx_last_us;
-static bool diagnostic_rx_seen;
 
 static uint8_t rx_raw[RX_CHUNK_FRAMES * 8];
 static float ep_Lch[RX_CHUNK_FRAMES];
@@ -382,7 +365,6 @@ void usb_audio_resume(void)
 	{
 		if (!usb_audio_stream_open(cur_alt))
 		{
-			usb_audio_resume_failures++;
 			set_state(USB_AUDIO_IDLE);
 		}
 	}
@@ -591,7 +573,6 @@ static void service_rx(void)
 		spectrum_feed_block(ep_Lch, ep_Rch, frames);
 		if (ringbuf_write_array_spinlock(pcm_stereo, frames * 2u, &buffer_audio) < 0)
 		{
-			usb_audio_ring_write_failures++;
 			usb_gain_ramp = ramp_before;
 			set_state(USB_AUDIO_OVERFLOW_FATAL);
 			break;
@@ -648,27 +629,6 @@ static void service_state(void)
 	default:
 		break;
 	}
-}
-
-static void service_wait_diagnostics(void)
-{
-	const uint32_t now = time_us_32();
-	const uint32_t sequence = usb_audio_rx_sequence();
-	if (sequence != diagnostic_rx_sequence)
-	{
-		diagnostic_rx_sequence = sequence;
-		diagnostic_rx_last_us = now;
-		diagnostic_rx_seen = true;
-	}
-	const bool receiving = diagnostic_rx_seen &&
-		(uint32_t)(now - diagnostic_rx_last_us) < RX_RECENT_TIMEOUT_US;
-	const bool buffering = !audio_suspended && audio_state_machine == USB_AUDIO_BUFFERING && receiving;
-	const bool clock_waiting = !audio_suspended && !dma_tx_clock_ready() &&
-		(audio_state_machine == USB_AUDIO_SWITCHING || buffering);
-	if (audio_wait_timeout_update(&buffering_wait, buffering, now, BUFFERING_TIMEOUT_US))
-		usb_audio_buffering_timeouts++;
-	if (audio_wait_timeout_update(&clock_wait, clock_waiting, now, CLOCK_WAIT_TIMEOUT_US))
-		usb_audio_clock_wait_timeouts++;
 }
 
 //--------------------------------------------------------------------+
@@ -813,17 +773,6 @@ void usb_sound_card_init(void)
 void usb_audio_task(void)
 {
     static bool startup_audio_released = false;
-    const uint32_t task_now_us = time_us_32();
-    if (usb_audio_task_previous_us != 0u)
-    {
-        const uint32_t gap_us = task_now_us - usb_audio_task_previous_us;
-        if (gap_us > usb_audio_task_max_gap_us)
-            usb_audio_task_max_gap_us = gap_us;
-        if (gap_us > 1000u)
-            usb_audio_task_gaps_over_1ms++;
-    }
-    usb_audio_task_previous_us = task_now_us;
-
     tud_task();
     if (dma_tx_fault_pending())
     {
@@ -850,7 +799,6 @@ void usb_audio_task(void)
     service_switch();
     service_rx();
     service_state();
-    service_wait_diagnostics();
     service_feedback();
 }
 

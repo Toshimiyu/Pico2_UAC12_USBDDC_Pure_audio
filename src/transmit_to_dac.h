@@ -45,9 +45,6 @@ extern bool dma_tx_fault_pending(void);
 extern uint8_t dma_tx_recover_fault(void);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
-extern volatile uint32_t dma_tx_underrun_count;
-extern volatile uint32_t dma_tx_fadeout_count;
-
 extern float i2s_actual_sample_rate(void);
 
 #endif /* _TRANSMIT_TO_DAC_H_ */

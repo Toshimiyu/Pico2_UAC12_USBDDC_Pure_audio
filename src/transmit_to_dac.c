@@ -67,8 +67,6 @@ static uint32_t dma_fade_in_total;
 static uint32_t dma_fade_in_remaining;
 static volatile int32_t dma_last_pcm_left;
 static volatile int32_t dma_last_pcm_right;
-volatile uint32_t dma_tx_underrun_count;
-volatile uint32_t dma_tx_fadeout_count;
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -177,17 +175,11 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     }
     else
     {
-        const usb_audio_state_t state = usb_audio_get_state();
-        const bool streaming = state == USB_AUDIO_STREAMING || state == USB_AUDIO_OVERFLOW_FATAL;
         buffer = dma_silence;
         words = DMA_SILENCE_FRAMES * 2u;
         dma_running_pcm = false;
         if (!dma_was_silence)
         {
-            if (streaming)
-                dma_tx_underrun_count++;
-            else
-                dma_tx_fadeout_count++;
             uint32_t fade_frames =
                 (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
             if (fade_frames == 0u)

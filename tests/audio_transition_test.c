@@ -1,6 +1,5 @@
 #include <limits.h>
 #include "audio_fade.h"
-#include "audio_wait_timeout.h"
 #include "pcm_silence_fade.h"
 
 static int test_pcm_silence_fade(void)
@@ -54,17 +53,5 @@ int main(void)
         audio_fade_apply_q16(-1, 32768u) != -1)
         return 2;
 
-    audio_wait_timeout_t timer = {0};
-    if (audio_wait_timeout_update(&timer, false, 1u, 100u) ||
-        audio_wait_timeout_update(&timer, true, 10u, 100u) ||
-        audio_wait_timeout_update(&timer, true, 109u, 100u) ||
-        !audio_wait_timeout_update(&timer, true, 110u, 100u) ||
-        audio_wait_timeout_update(&timer, true, 1000u, 100u))
-        return 3;
-    if (audio_wait_timeout_update(&timer, false, 1001u, 100u) ||
-        audio_wait_timeout_update(&timer, true, UINT32_MAX - 49u, 100u) ||
-        audio_wait_timeout_update(&timer, true, 49u, 100u) ||
-        !audio_wait_timeout_update(&timer, true, 50u, 100u))
-        return 4;
     return 0;
 }
